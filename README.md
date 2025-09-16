@@ -1,51 +1,101 @@
-Wildlife Distance Tool
-Ever wanted to know how far away that deer is in your trail cam photo? Well, now you can! This is a cool desktop app that lets you train your own AI to figure out the distance to wildlife in your pictures.
+# Wildlife Distance Tool
 
-The app has two main parts, so you can choose what you need to do:
+Ever wanted to know how far away that deer is in your trail cam photo? **Now you can!**  
+Wildlife Distance Tool is a desktop application that lets you train your own AI to estimate the distance to wildlife in your images.
 
-The Annotation Tool: This is where you teach the AI. You'll draw boxes around animals in your photos and tell the app how far away they are in real life.
+---
 
-The Calculator Tool: Once your AI is trained, you can use this tool to load it up, click on an animal in a new photo, and get an instant distance estimate!
+## 📖 Table of Contents
+- [Introduction](#introduction)  
+- [Features](#features)  
+- [How It Works](#how-it-works)  
+- [Installation](#installation)  
+- [Usage](#usage)  
+  - [Annotation Tool](#annotation-tool)  
+  - [Calculator Tool](#calculator-tool)  
+- [Saving Results](#saving-results)  
+- [Downloads](#downloads)  
+- [Troubleshooting](#troubleshooting)  
+- [Credits](#credits)  
+- [License](#license)  
 
-Cool Features
-Super Smart AI: It uses a fancy AI model (called a DPT) to understand the 3D layout of your photos, then uses another model that you train to get super accurate distances!
+---
 
-One-Click Training: Seriously, just click a button! The app does all the hard work and spits out a trained model file that you can use anytime.
+## 🐾 Introduction
+This app combines depth perception AI with custom user training to provide accurate wildlife distance measurements. It’s perfect for researchers, wildlife enthusiasts, and anyone using trail cameras.
 
-Easy Peasy Calculations: Once your model is trained, just load it up, click on an animal, and boom! Instant distance.
+---
 
-Save Your Results: You can easily save all your distance calculations into a CSV file to use in a spreadsheet or for other projects.
+## ✨ Features
+- **Super Smart AI** – Uses a **DPT model** to understand the 3D structure of your photos.  
+- **One-Click Training** – Train your custom distance model with a single click.  
+- **Easy Calculations** – Load your trained model, click on an animal, and instantly get a distance estimate.  
+- **Result Export** – Save your distance calculations into a CSV file for further analysis.  
+- **Cross-Platform** – Available for **macOS** and **Windows**.
 
-So, How Does It Work?
-It's a neat two-step trick!
+---
 
-1. First, It Sees in 3D!
-A big, powerful AI called a DPT looks at your photo. It creates something called a "depth map," which is basically a cool grayscale version of your image where bright spots are close and dark spots are far away. It figures out the 3D structure of the scene!
+## 🧩 How It Works
+1. **Step 1: Depth Perception**  
+   A **DPT (Dense Prediction Transformer)** generates a *depth map* from your photo—a grayscale image where brightness corresponds to distance.  
 
-2. Then, You Teach It About "Meters"
-That depth map doesn't know about meters or feet. That's where you come in! When you annotate your photos, you're teaching a second, smaller AI. You're telling it, "Hey, a spot with this shade of gray in the depth map equals this many meters in real life."
+2. **Step 2: Real-World Calibration**  
+   You annotate your photos with real distances, teaching a smaller AI to translate grayscale depth values into actual meters (or feet).  
 
-So, when you go to calculate a distance later, the app just looks at the depth map's gray value, asks your little AI what it means, and gives you the answer! Pretty cool, right?
+3. **Step 3: Instant Distance**  
+   When analyzing new photos, the app maps depth values to real-world units, giving you quick and reliable distance estimates.
 
-Downloads
-Ready to give it a try? You can grab the latest version for Mac or Windows right from the releases page. No complicated setup needed!
+---
 
->> Get it Here! <<
+## ⚙️ Installation
+1. Head to the [Releases page](https://github.com/**YourUsername**/**YourRepo**/releases).  
+2. Download the `.zip` for your operating system (**macOS** or **Windows**).  
+3. Unzip the file.  
+4. Double-click the app to run it. 🎉  
 
-(Just remember to change YourUsername/YourRepo to the actual URL of the GitHub repository!)
+> **Mac Users**: The first launch may be blocked by Gatekeeper. Right-click the app, choose **Open**, and confirm.
 
-How to Get Started
-Head to the download link above.
+---
 
-Grab the .zip file for your computer (macOS or Windows).
+## 🚀 Usage
 
-Unzip it!
+### Annotation Tool
+- Load your photos.  
+- Draw bounding boxes around wildlife.  
+- Enter the real-world distance for each annotation.  
+- Save annotations to train your custom distance model.  
 
-Double-click the app to run it. That's it!
+### Calculator Tool
+- Load your trained model.  
+- Open a new photo.  
+- Click on an animal, and get the distance instantly.  
 
-Mac Users! The first time you open the app, your computer might get a little scared. Just right-click the app icon and choose "Open" to let it know it's all good.
+---
 
-Credits
-Built by: Andaman Chankhao
+## 💾 Saving Results
+- All distance calculations can be exported to **CSV format**.  
+- Use the exported data in spreadsheets or other analytical tools.
 
-App Help & CI/CD Setup: Gemini
+---
+
+## 📥 Downloads
+Grab the latest release here:  
+👉 [Download Wildlife Distance Tool](https://github.com/**YourUsername**/**YourRepo**/releases)  
+
+---
+
+## 🛠️ Troubleshooting
+- **Mac app won’t open?** – Right-click the app, select **Open**, and confirm.  
+- **No results?** – Make sure your model has been trained with at least a few annotated photos.  
+- **Strange values?** – Double-check that your annotations have accurate real-world distances.
+
+---
+
+## 👥 Credits
+- **Developer:** Andaman Chankhao  
+- **App Help & CI/CD Setup:** Gemini  
+
+---
+
+## 📜 License
+This project is licensed under the [MIT License](LICENSE).  
