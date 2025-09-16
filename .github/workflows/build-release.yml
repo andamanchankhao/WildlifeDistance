@@ -31,18 +31,18 @@ jobs:
 
       # Step 1.4: Run PyInstaller to build the .app file
       - name: Build macOS Application
-        run: pyinstaller WildlifeTool.spec
+        run: pyinstaller WildlifeDistance.spec
 
       # Step 1.5: Compress the final .app file into a .zip
       - name: Zip the macOS App
-        run: zip -r WildlifeTool-macOS.zip dist/WildlifeTool.app
+        run: zip -r WildlifeDistance-macOS.zip dist/WildlifeDistance.app
 
       # Step 1.6: Upload the zip file as an "artifact" to be used in the final release job
       - name: Upload macOS Artifact
         uses: actions/upload-artifact@v4
         with:
           name: macos-build
-          path: WildlifeTool-macOS.zip
+          path: WildlifeDistance-macOS.zip
 
   # --- JOB 2: Build the Windows Application (runs in parallel with macOS job) ---
   build-windows:
@@ -65,18 +65,18 @@ jobs:
       
       # Step 2.4: Run PyInstaller to build the .exe file
       - name: Build Windows Application
-        run: pyinstaller WildlifeTool.spec
+        run: pyinstaller WildlifeDistance.spec
       
       # Step 2.5: Compress the final .exe file into a .zip
       - name: Zip the Windows App
-        run: Compress-Archive -Path dist/WildlifeTool.exe -DestinationPath WildlifeTool-Windows.zip
+        run: Compress-Archive -Path dist/WildlifeDistance.exe -DestinationPath WildlifeDistance-Windows.zip
 
       # Step 2.6: Upload the zip file as an "artifact"
       - name: Upload Windows Artifact
         uses: actions/upload-artifact@v4
         with:
           name: windows-build
-          path: WildlifeTool-Windows.zip
+          path: WildlifeDistance-Windows.zip
 
   # --- JOB 3: Create the GitHub Release ---
   create-release:
