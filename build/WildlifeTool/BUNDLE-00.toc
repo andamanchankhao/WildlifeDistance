@@ -1,3 +1,0 @@
-([('WildlifeTool',
-   '/Users/andamanchankhao/Workspace/Distance-calculator/dist/WildlifeTool',
-   'EXECUTABLE')],)
