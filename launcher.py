@@ -6,10 +6,20 @@
 import sys
 import subprocess
 import os
-from datetime import date # Import the date object
+from datetime import date
 from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QPushButton, QLabel, QMessageBox
 from PyQt5.QtGui import QFont, QPixmap, QIcon
 from PyQt5.QtCore import Qt, QTimer
+
+def resource_path(relative_path):
+    """ Get absolute path to resource, works for dev and for PyInstaller """
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
 
 class AppLauncher(QWidget):
     """
@@ -18,11 +28,10 @@ class AppLauncher(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle('Wildlife Distance')
-        # Adjusted geometry for the new footnote
         self.setGeometry(300, 300, 300, 320)
         
-        script_dir = os.path.dirname(os.path.realpath(__file__))
-        icon_path = os.path.join(script_dir, 'icon.png')
+        # Use the helper function to find the icon
+        icon_path = resource_path('icon.png')
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
 
@@ -36,24 +45,21 @@ class AppLauncher(QWidget):
 
         # --- Add Image Display ---
         image_label = QLabel(self)
-        script_dir = os.path.dirname(os.path.realpath(__file__))
-        # You should create an image named 'wildlife_icon.png' and place it in the same folder.
-        image_path = os.path.join(script_dir, 'icon.png')
+        # Use the helper function to find the image
+        image_path = resource_path('icon.png')
         
         if os.path.exists(image_path):
             pixmap = QPixmap(image_path)
-            # Scale pixmap to fit nicely in the window
             image_label.setPixmap(pixmap.scaled(360, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation))
             image_label.setAlignment(Qt.AlignCenter)
         else:
-            # Placeholder text if the image is not found
             image_label.setText("Image not found\n(Place 'icon.png' in the same folder)")
             image_label.setFont(QFont("Arial", 10))
             image_label.setAlignment(Qt.AlignCenter)
-            image_label.setMinimumHeight(150) # Give it some space
+            image_label.setMinimumHeight(150)
 
         layout.addWidget(image_label)
-        layout.addSpacing(15) # Add some space between the image and the buttons
+        layout.addSpacing(15)
 
         # Button to launch the annotation and training tool
         self.annotate_button = QPushButton("📍Annotate Images & Train Model")
@@ -69,12 +75,11 @@ class AppLauncher(QWidget):
         self.calculate_button.clicked.connect(self.open_calculator_tool)
         layout.addWidget(self.calculate_button)
 
-        # Add a stretch to push the footnote to the bottom
         layout.addStretch(1)
 
         # --- Add Footnote ---
         version = "v1.1"
-        today = date.today().strftime("%B %d, %Y") # Format date as Month Day, Year
+        today = date.today().strftime("%B %d, %Y")
         footnote_text = f"{version} - {today}"
         
         footnote_label = QLabel(footnote_text)
@@ -86,47 +91,42 @@ class AppLauncher(QWidget):
 
     def run_script(self, script_name, tool_name):
         """
-        Launches a Python script, shows a loading dialog, and changes the cursor.
-        
-        Args:
-            script_name (str): The filename of the script to run.
-            tool_name (str): The user-friendly name of the tool for the message.
+        Launches a Python script using the correct path, whether bundled or not.
         """
-        # Create and configure the loading dialog
         loading_dialog = QMessageBox(self)
         loading_dialog.setWindowTitle("Loading")
         loading_dialog.setText(f"Opening the {tool_name}...\nThis may take a moment.")
-        loading_dialog.setStandardButtons(QMessageBox.NoButton) # No buttons on the dialog
+        loading_dialog.setStandardButtons(QMessageBox.NoButton)
         loading_dialog.setModal(True)
 
         def restore_ui():
-            """A helper function to close the dialog and restore the normal cursor."""
             loading_dialog.accept()
             QApplication.restoreOverrideCursor()
 
         try:
-            # Change cursor to a waiting cursor and show the dialog
             QApplication.setOverrideCursor(Qt.WaitCursor)
             loading_dialog.show()
-            QApplication.processEvents()  # Ensure the UI updates to show the dialog immediately
+            QApplication.processEvents()
 
-            # Use subprocess.Popen to run the script in a new process
-            print(f"Launching {script_name}...")
-            subprocess.Popen([sys.executable, script_name])
+            # Use the helper function to get the correct path to the script
+            script_path = resource_path(script_name)
+            
+            print(f"Launching {script_path}...")
+            # Run the script from its correct location
+            subprocess.Popen([sys.executable, script_path])
 
-            # Schedule the UI to be restored after a delay, giving the app time to open
-            QTimer.singleShot(3000, restore_ui)  # Close dialog and restore cursor after 3 seconds
+            QTimer.singleShot(3000, restore_ui)
 
         except FileNotFoundError:
-            restore_ui() # Restore UI immediately on error
+            restore_ui()
             error_msg = QMessageBox()
             error_msg.setIcon(QMessageBox.Critical)
             error_msg.setText(f"Error: Script file not found.")
-            error_msg.setInformativeText(f"Ensure '{script_name}' is in the same directory as this launcher.")
+            error_msg.setInformativeText(f"Ensure '{script_name}' is correctly bundled in the .spec file.")
             error_msg.setWindowTitle("File Not Found Error")
             error_msg.exec_()
         except Exception as e:
-            restore_ui() # Restore UI immediately on error
+            restore_ui()
             print(f"An error occurred while trying to launch {script_name}: {e}")
 
     def open_annotation_tool(self):
