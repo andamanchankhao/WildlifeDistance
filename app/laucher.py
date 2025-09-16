@@ -1,0 +1,105 @@
+########################################################
+### Dev : Andaman Chankhao andmanchankhao@gmail.com ####
+### Launcher created by Gemini #########################
+########################################################
+
+import sys
+import subprocess
+from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QPushButton, QLabel, QMessageBox
+from PyQt5.QtGui import QFont
+from PyQt5.QtCore import Qt, QTimer
+
+class AppLauncher(QWidget):
+    """
+    A simple launcher window to open the Annotation and Calculator tools.
+    """
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle('Wildlife Tool Launcher')
+        self.setGeometry(300, 300, 400, 500)
+        self.init_ui()
+
+    def init_ui(self):
+        """Initializes the user interface of the launcher."""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(15)
+
+        title = QLabel("Wildlife Distance Tool")
+        title.setFont(QFont("Arial", 18, QFont.Bold))
+        title.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title)
+
+        # Button to launch the annotation and training tool
+        self.annotate_button = QPushButton("Annotate Images & Train Model")
+        self.annotate_button.setFont(QFont("Arial", 12))
+        self.annotate_button.setToolTip("Open a tool to draw boxes on images, assign distances, and train a new model.")
+        self.annotate_button.clicked.connect(self.open_annotation_tool)
+        layout.addWidget(self.annotate_button)
+
+        # Button to launch the distance calculation tool
+        self.calculate_button = QPushButton("Calculate Distances from Model")
+        self.calculate_button.setFont(QFont("Arial", 12))
+        self.calculate_button.setToolTip("Open a tool to load a pre-trained model and calculate distances by clicking on images.")
+        self.calculate_button.clicked.connect(self.open_calculator_tool)
+        layout.addWidget(self.calculate_button)
+
+    def run_script(self, script_name, tool_name):
+        """
+        Launches a Python script, shows a loading dialog, and changes the cursor.
+        
+        Args:
+            script_name (str): The filename of the script to run.
+            tool_name (str): The user-friendly name of the tool for the message.
+        """
+        # Create and configure the loading dialog
+        loading_dialog = QMessageBox(self)
+        loading_dialog.setWindowTitle("Loading")
+        loading_dialog.setText(f"Opening the {tool_name}...\nThis may take a moment.")
+        loading_dialog.setStandardButtons(QMessageBox.NoButton) # No buttons on the dialog
+        loading_dialog.setModal(True)
+
+        def restore_ui():
+            """A helper function to close the dialog and restore the normal cursor."""
+            loading_dialog.accept()
+            QApplication.restoreOverrideCursor()
+
+        try:
+            # Change cursor to a waiting cursor and show the dialog
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            loading_dialog.show()
+            QApplication.processEvents()  # Ensure the UI updates to show the dialog immediately
+
+            # Use subprocess.Popen to run the script in a new process
+            print(f"Launching {script_name}...")
+            subprocess.Popen([sys.executable, script_name])
+
+            # Schedule the UI to be restored after a delay, giving the app time to open
+            QTimer.singleShot(3000, restore_ui)  # Close dialog and restore cursor after 3 seconds
+
+        except FileNotFoundError:
+            restore_ui() # Restore UI immediately on error
+            error_msg = QMessageBox()
+            error_msg.setIcon(QMessageBox.Critical)
+            error_msg.setText(f"Error: Script file not found.")
+            error_msg.setInformativeText(f"Ensure '{script_name}' is in the same directory as this launcher.")
+            error_msg.setWindowTitle("File Not Found Error")
+            error_msg.exec_()
+        except Exception as e:
+            restore_ui() # Restore UI immediately on error
+            print(f"An error occurred while trying to launch {script_name}: {e}")
+
+    def open_annotation_tool(self):
+        """Handler to open the annotation tool script."""
+        self.run_script('app/annotate-train-DPT.py', "Annotation Tool")
+
+    def open_calculator_tool(self):
+        """Handler to open the calculator tool script."""
+        self.run_script('app/calculator-DPT.py', "Calculator Tool")
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    launcher = AppLauncher()
+    launcher.show()
+    sys.exit(app.exec_())
+
