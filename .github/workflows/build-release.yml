@@ -106,5 +106,5 @@ jobs:
           name: Release ${{ github.run_number }}
           body: "Automated release of Wildlife Distance Tool."
           files: |
-            WildlifeTool-macOS.zip
-            WildlifeTool-Windows.zip
+            WildlifeDistance-macOS.zip
+            WildlifeDistance-Windows.zip
