@@ -7,6 +7,7 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[
+        ('icon.icns', '.'),
         ('icon.png', '.')
     ],
     hiddenimports=[],
