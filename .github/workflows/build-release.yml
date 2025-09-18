@@ -1,7 +1,6 @@
-# This file defines the automated build and release process for your Wildlife Tool.
-# It will run every time you push a new version tag (e.g., v1.0, v1.1) to your repository.
+# This workflow builds your application for macOS and Windows whenever you push a new version tag.
 
-name: Build and Release Wildlife Distance Tool
+name: Build and Release Wildlife Tool
 
 on:
   push:
@@ -62,8 +61,12 @@ jobs:
       
       - name: Build Windows Application
         run: pyinstaller WildlifeDistance.spec
-      
-      # *** FIXED: This now zips the entire 'WildlifeDistance' folder, not just the .exe ***
+
+      # New Debugging Step: List the contents of the dist folder to see what was created.
+      - name: List build artifacts for debugging
+        run: ls -R dist
+
+      # Corrected Zipping Step: This now correctly zips the entire application folder.
       - name: Zip the Windows App
         run: Compress-Archive -Path dist/WildlifeDistance -DestinationPath WildlifeDistance-Windows.zip
 
@@ -89,14 +92,11 @@ jobs:
         with:
           name: windows-build
       
-      # *** IMPROVED: This now creates a release based on the tag you push ***
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          # This uses the Git tag (e.g., "v1.0") as the release name and tag.
           tag_name: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
-          # This will automatically generate release notes based on your commit history.
           generate_release_notes: true
           files: |
             WildlifeDistance-macOS.zip
