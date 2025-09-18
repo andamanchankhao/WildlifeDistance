@@ -1,14 +1,33 @@
 # -*- mode: python ; coding: utf-8 -*-
+import platform
+import os
 
-block_cipher = None
+# --- Determine Icon Path ---
+# This section checks for the correct icon file based on the operating system.
+# If the icon file is not found, it defaults to None.
+icon_path = None
+if platform.system() == "Windows":
+    if os.path.exists('icon.ico'):
+        icon_path = 'icon.ico'
+elif platform.system() == "Darwin": # 'Darwin' is the system name for macOS
+    if os.path.exists('icon.icns'):
+        icon_path = 'icon.icns'
 
+# --- Data files ---
+# This list includes all non-python files needed for your application to run.
+datas = []
+if icon_path:
+    # Add the icon to the datas list only if it was found.
+    datas.append((os.path.basename(icon_path), '.'))
+
+# --- Main Analysis ---
+# This tells PyInstaller which scripts are part of your application
+# and where to find their dependencies.
 a = Analysis(
     ['launcher.py', 'annotate_train_DPT.py', 'calculator_DPT.py'],
     pathex=[],
     binaries=[],
-    datas=[
-        ('icon.png', '.')
-    ],
+    datas=datas,
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -16,15 +35,18 @@ a = Analysis(
     excludes=[],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
-    cipher=block_cipher,
+    cipher=None,
     noarchive=False,
 )
-pyz = PYZ(a.pure)
+pyz = PYZ(a.pure, a.zipped_data)
 
+# --- Executable ---
+# This defines the main executable file and sets the icon if it exists.
 exe = EXE(
     pyz,
     a.scripts,
     [],
+    exclude_binaries=True,
     name='WildlifeDistance',
     debug=False,
     bootloader_ignore_signals=False,
@@ -32,17 +54,29 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=False,
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
+    console=False,  # This creates a windowed application (no terminal)
+    icon=icon_path
 )
-app = BUNDLE(
-    exe,
-    name='WildlifeDistance.app',
-    icon='icon.icns',
-    bundle_identifier=None,
-)
+
+# --- Platform-Specific Bundling ---
+if platform.system() == "Darwin":
+    # Create a .app bundle for macOS
+    app = BUNDLE(
+        exe,
+        name='WildlifeDistance.app',
+        icon=icon_path,
+        bundle_identifier=None,
+    )
+else:
+    # For Windows (and other OSes), create a standard folder containing the executable.
+    coll = COLLECT(
+        exe,
+        a.binaries,
+        a.zipfiles,
+        a.datas,
+        strip=False,
+        upx=True,
+        upx_exclude=[],
+        name='WildlifeDistance'
+    )
 
