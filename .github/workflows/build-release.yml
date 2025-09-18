@@ -6,7 +6,7 @@ name: Build and Release Wildlife Tool
 on:
   push:
     tags: 
-      - 'v.0.7'
+      - 'v.0.7.1'
 
 # Add this section to grant the necessary permissions for creating a release
 permissions:
