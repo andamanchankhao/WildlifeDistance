@@ -32,7 +32,7 @@ class AppLauncher(QWidget):
         self.setWindowTitle('Wildlife Distance')
         self.setGeometry(300, 300, 300, 320)
         
-        icon_path = resource_path('icon.icns')
+        icon_path = resource_path('icon.png')
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
 
@@ -50,7 +50,7 @@ class AppLauncher(QWidget):
 
         # --- Logo ---
         logo_label = QLabel(self)
-        logo_path = resource_path('icon.icns')
+        logo_path = resource_path('icon.png')
         if os.path.exists(logo_path):
             pixmap = QPixmap(logo_path).scaled(96, 96, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             logo_label.setPixmap(pixmap)

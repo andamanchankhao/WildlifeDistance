@@ -5,8 +5,8 @@ name: Build and Release Wildlife Tool
 # This workflow runs whenever you push code to the 'main' branch
 on:
   push:
-    tags:
-      - 'v0.6' # Triggers the workflow on any tag starting with 'v' (e.g., v1.0, v1.1)
+    tags: 
+      - 'v.0.7'
 
 # Add this section to grant the necessary permissions for creating a release
 permissions:
@@ -41,15 +41,15 @@ jobs:
 
       # Step 4: Run PyInstaller to build the application
       - name: Build with PyInstaller
-        run: pyinstaller WildlifeTool.spec --noconfirm
+        run: pyinstaller WildlifeDistance.spec --noconfirm
 
       # Step 5: Package the final application into a zip file
       - name: Package application
         run: |
           if [ "${{ runner.os }}" == "macOS" ]; then
-            zip -r WildlifeTool-macOS.zip dist/WildlifeTool.app
+            zip -r WildlifeDistance-macOS.zip dist/WildlifeDistance.app
           elif [ "${{ runner.os }}" == "Windows" ]; then
-            7z a WildlifeTool-Windows.zip ./dist/WildlifeTool.exe
+            7z a WildlifeDistance-Windows.zip ./dist/WildlifeDistance.exe
           fi
         shell: bash
 
@@ -58,7 +58,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wildlife-tool-${{ matrix.os }}
-          path: WildlifeTool-*.zip
+          path: WildlifeDistance-*.zip
 
   release:
     # This job depends on the 'build' job finishing successfully for both OSs
@@ -94,8 +94,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./artifacts/wildlife-tool-macos-latest/WildlifeTool-macOS.zip
-          asset_name: WildlifeTool-macOS.zip
+          asset_path: ./artifacts/wildlife-tool-macos-latest/WildlifeDistance-macOS.zip
+          asset_name: WildlifeDistance-macOS.zip
           asset_content_type: application/zip
       - name: Upload Windows Asset
         uses: actions/upload-release-asset@v1
@@ -103,9 +103,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./artifacts/wildlife-tool-windows-latest/WildlifeTool-Windows.zip
-          asset_name: WildlifeTool-Windows.zip
+          asset_path: ./artifacts/wildlife-tool-windows-latest/WildlifeDistance-Windows.zip
+          asset_name: WildlifeDistance-Windows.zip
           asset_content_type: application/zip
-
-
 
