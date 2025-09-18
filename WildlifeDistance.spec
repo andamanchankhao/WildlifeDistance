@@ -4,7 +4,7 @@ block_cipher = None
 
 a = Analysis(
     ['launcher.py'],
-    pathex=[],
+    pathex=[], 
     binaries=[],
     datas=[
         ('annotate_train_DPT.py', '.'),
