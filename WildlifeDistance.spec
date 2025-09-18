@@ -3,13 +3,14 @@
 block_cipher = None
 
 a = Analysis(
-    ['launcher.py', 'annotate-train-DPT.py', 'calculator-DPT.py'],
+    ['launcher.py'],
     pathex=[],
     binaries=[],
     datas=[
-        ('icon.icns', '.'),
-        ('icon.png', '.')
-    ],
+        ('annotate-train-DPT.py', '.'),
+        ('calculator-DPT.py', '.'),
+        ('icon.png', '.'),
+        ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -25,6 +26,8 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.datas,
     [],
     name='WildlifeDistance',
     debug=False,
