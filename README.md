@@ -1,5 +1,7 @@
 # Wildlife Distance Tool
 
+![icon](icon.png)
+
 Ever wanted to know how far away that deer is in your trail cam photo? **Now you can!**  
 Wildlife Distance Tool is a desktop application that lets you train your own AI to estimate the distance to wildlife in your images.
 
@@ -48,7 +50,7 @@ This app combines depth perception AI with custom user training to provide accur
 ---
 
 ## ⚙️ Installation
-1. Head to the [Releases page](https://github.com/**YourUsername**/**YourRepo**/releases).  
+1. Head to the [Releases page](https://github.com/andamanchankhao/WildlifeDistance/releases).  
 2. Download the `.zip` for your operating system (**macOS** or **Windows**).  
 3. Unzip the file.  
 4. Double-click the app to run it. 🎉  
@@ -80,7 +82,7 @@ This app combines depth perception AI with custom user training to provide accur
 
 ## 📥 Downloads
 Grab the latest release here:  
-👉 [Download Wildlife Distance Tool](https://github.com/**YourUsername**/**YourRepo**/releases)  
+👉 [Download Wildlife Distance Tool](https://github.com/andamanchankhao/WildlifeDistance/releases)  
 
 ---
 
