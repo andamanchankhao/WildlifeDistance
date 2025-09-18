@@ -1,6 +1,6 @@
 # Wildlife Distance Tool
 
-![icon](icon.png)
+<img src="icon.png" alt="icon" width="100px" height="100px">
 
 Ever wanted to know how far away that deer is in your trail cam photo? **Now you can!**  
 Wildlife Distance Tool is a desktop application that lets you train your own AI to estimate the distance to wildlife in your images.
