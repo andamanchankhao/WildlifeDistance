@@ -5,7 +5,7 @@ name: Build and Release Wildlife Tool
 on:
   push:
     tags:
-      - 'v0.1' # Triggers the workflow on version tags like v1.0, v1.1, etc.
+      - 'v0.2' # Triggers the workflow on version tags like v1.0, v1.1, etc.
 
 permissions:
   contents: write
