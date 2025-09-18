@@ -742,3 +742,4 @@ if __name__ == "__main__":
     window = DistanceCalculator()
     window.show()
     sys.exit(app.exec_())
+

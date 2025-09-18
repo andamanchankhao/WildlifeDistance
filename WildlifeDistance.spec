@@ -7,8 +7,8 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[
-        ('annotate-train-DPT.py', '.'),
-        ('calculator-DPT.py', '.'),
+        ('annotate_train_DPT.py', '.'),
+        ('calculator_DPT.py', '.'),
         ('icon.png', '.'),
         ],
     hiddenimports=[],

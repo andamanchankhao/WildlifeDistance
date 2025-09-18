@@ -146,7 +146,7 @@ class DepthMapWindow(QDialog):
         layout = QVBoxLayout(self)
         self.depth_map_label = QLabel()
         self.depth_map_label.setAlignment(Qt.AlignCenter)
-        self.depth_map_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.QSizePolicy.Expanding)
+        self.depth_map_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         layout.addWidget(self.depth_map_label)
 
         self.depth_map_array = depth_map_array # Store the numpy array
@@ -461,11 +461,11 @@ class TrainingThread(QThread):
 
             # Train the regression model
             history = regression_model.fit(X_train_reg, y_train_reg,
-                                           epochs=50, # Number of training epochs (can be adjusted)
-                                           batch_size=8, # Batch size for training (can be adjusted)
-                                           validation_data=(X_val_reg, y_val_reg) if X_val_reg.size > 0 else None, # Use validation data if available
-                                           callbacks=[pyqt_callback], # Pass the custom callback
-                                           verbose=0) # Set verbose to 0 to prevent Keras from printing to console directly
+                                              epochs=50, # Number of training epochs (can be adjusted)
+                                              batch_size=8, # Batch size for training (can be adjusted)
+                                              validation_data=(X_val_reg, y_val_reg) if X_val_reg.size > 0 else None, # Use validation data if available
+                                              callbacks=[pyqt_callback], # Pass the custom callback
+                                              verbose=0) # Set verbose to 0 to prevent Keras from printing to console directly
 
             self.update_status.emit("Regression model training complete.")
 
@@ -1293,8 +1293,18 @@ class AnnotationTool(QMainWindow):
         self.show_dpt_btn.setEnabled(enabled) # Enable/disable the new button
         self.delete_annotation_btn.setEnabled(enabled) # Enable/disable the new delete button
 
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
+def main():
+    """Main function to run the Annotation Tool application."""
+    app = QApplication.instance() 
+    if not app:
+        app = QApplication(sys.argv)
+    
     window = AnnotationTool()
     window.show()
-    sys.exit(app.exec_())
+    
+    if not QApplication.instance():
+        sys.exit(app.exec_())
+
+if __name__ == "__main__":
+    main()
+
