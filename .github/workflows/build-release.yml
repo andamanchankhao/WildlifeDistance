@@ -1,14 +1,15 @@
 # GitHub Actions workflow for building and releasing the Wildlife Tool
+# Revised for best practices and efficiency
 
 name: Build and Release Wildlife Tool
 
-# This workflow runs whenever you push code to the 'main' branch
+# This workflow now runs only when you push a new tag that looks like a version number (e.g., v1.0, v1.2.3)
 on:
   push:
-    tags: 
-      - 'v.0.7.1'
+    tags:
+      - 'v0.7.2'
 
-# Add this section to grant the necessary permissions for creating a release
+# Grant the necessary permissions for creating a release and uploading assets
 permissions:
   contents: write
 
@@ -33,17 +34,26 @@ jobs:
         with:
           python-version: '3.11' # Specify a stable Python version
 
-      # Step 3: Install all required libraries from your requirements.txt file
+      # Step 3: Add caching for dependencies to speed up subsequent builds
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      # Step 4: Install all required libraries from your requirements.txt file
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # Step 4: Run PyInstaller to build the application
+      # Step 5: Run PyInstaller to build the application
       - name: Build with PyInstaller
         run: pyinstaller WildlifeDistance.spec --noconfirm
 
-      # Step 5: Package the final application into a zip file
+      # Step 6: Package the final application into a zip file
       - name: Package application
         run: |
           if [ "${{ runner.os }}" == "macOS" ]; then
@@ -53,11 +63,11 @@ jobs:
           fi
         shell: bash
 
-      # Step 6: Upload the packaged zip file as an artifact
+      # Step 7: Upload the packaged zip file as an artifact
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wildlife-tool-${{ matrix.os }}
+          name: wildlife-distance-${{ matrix.os }}
           path: WildlifeDistance-*.zip
 
   release:
@@ -72,38 +82,26 @@ jobs:
         with:
           path: artifacts
 
-      # Step 2: Use a special action to create a new GitHub Release
+      # Step 2: Create a new GitHub Release using the tag that triggered the workflow
       - name: Create Release
         id: create_release
         uses: actions/create-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: v${{ github.run_number }}
-          release_name: Release v${{ github.run_number }}
+          # Use the git tag that triggered the workflow for the release tag and name
+          tag_name: ${{ github.ref_name }}
+          release_name: Release ${{ github.ref_name }}
           body: |
             Automated release of the Wildlife Distance Tool.
             Download the appropriate version for your operating system below.
           draft: false
           prerelease: false
 
-      # Step 3: Upload the macOS and Windows zip files to the new release
+      # Step 3: Upload all packaged assets (*.zip) from the artifacts directory to the new release
       - name: Upload Release Assets
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v2
         with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./artifacts/wildlife-tool-macos-latest/WildlifeDistance-macOS.zip
-          asset_name: WildlifeDistance-macOS.zip
-          asset_content_type: application/zip
-      - name: Upload Windows Asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./artifacts/wildlife-tool-windows-latest/WildlifeDistance-Windows.zip
-          asset_name: WildlifeDistance-Windows.zip
-          asset_content_type: application/zip
+          # This action will find and upload all .zip files from the artifacts subdirectories
+          files: artifacts/*/*.zip
 
