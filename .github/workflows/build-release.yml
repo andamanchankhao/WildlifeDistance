@@ -1,13 +1,13 @@
-# GitHub Actions workflow for building and releasing the Wildlife Tool
+# GitHub Actions workflow for building and releasing the Wildlife Distance Tool
 # Revised for best practices and efficiency
 
-name: Build and Release Wildlife Tool
+name: Build and Release Wildlife Distance
 
 # This workflow now runs only when you push a new tag that looks like a version number (e.g., v1.0, v1.2.3)
 on:
   push:
     tags:
-      - 'v0.7.2'
+      - 'v0.7.3'
 
 # Grant the necessary permissions for creating a release and uploading assets
 permissions:
@@ -82,26 +82,17 @@ jobs:
         with:
           path: artifacts
 
-      # Step 2: Create a new GitHub Release using the tag that triggered the workflow
-      - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Step 2: Create a new GitHub Release and upload all assets in one step
+      - name: Create Release and Upload Assets
+        uses: softprops/action-gh-release@v2
         with:
           # Use the git tag that triggered the workflow for the release tag and name
           tag_name: ${{ github.ref_name }}
-          release_name: Release ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          # The body of the release message.
           body: |
             Automated release of the Wildlife Distance Tool.
             Download the appropriate version for your operating system below.
-          draft: false
-          prerelease: false
-
-      # Step 3: Upload all packaged assets (*.zip) from the artifacts directory to the new release
-      - name: Upload Release Assets
-        uses: softprops/action-gh-release@v2
-        with:
-          # This action will find and upload all .zip files from the artifacts subdirectories
+          # This glob pattern will find and upload all .zip files from the artifacts subdirectories
           files: artifacts/*/*.zip
 
