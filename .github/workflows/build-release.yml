@@ -1,107 +1,111 @@
-# This workflow builds your application for macOS and Windows whenever you push a new version tag.
+# GitHub Actions workflow for building and releasing the Wildlife Tool
 
 name: Build and Release Wildlife Tool
 
+# This workflow runs whenever you push code to the 'main' branch
 on:
   push:
     tags:
-      - 'v0.5' # Triggers the workflow on any tag starting with 'v' (e.g., v1.0, v1.1)
+      - 'v0.6' # Triggers the workflow on any tag starting with 'v' (e.g., v1.0, v1.1)
 
+# Add this section to grant the necessary permissions for creating a release
 permissions:
   contents: write
 
 jobs:
-  # --- JOB 1: Build the macOS Application ---
-  build-macos:
-    runs-on: macos-latest
+  build:
+    # Use a matrix strategy to run jobs on both Windows and macOS
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+
+    # The type of runner that the job will run on
+    runs-on: ${{ matrix.os }}
 
     steps:
-      - name: Check out repository code
+      # Step 1: Check out your repository code so the workflow can access it
+      - name: Check out code
         uses: actions/checkout@v4
 
+      # Step 2: Set up Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.11' # Specify a stable Python version
 
+      # Step 3: Install all required libraries from your requirements.txt file
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Build macOS Application
-        run: pyinstaller WildlifeDistance.spec
+      # Step 4: Run PyInstaller to build the application
+      - name: Build with PyInstaller
+        run: pyinstaller WildlifeTool.spec --noconfirm
 
-      - name: Zip the macOS App
-        run: zip -r WildlifeDistance-macOS.zip dist/WildlifeDistance.app
-
-      - name: Upload macOS Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-build
-          path: WildlifeDistance-macOS.zip
-
-  # --- JOB 2: Build the Windows Application ---
-  build-windows:
-    runs-on: windows-latest
-
-    steps:
-      - name: Check out repository code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
+      # Step 5: Package the final application into a zip file
+      - name: Package application
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-      
-      - name: Build Windows Application
-        run: pyinstaller WildlifeDistance.spec
+          if [ "${{ runner.os }}" == "macOS" ]; then
+            zip -r WildlifeTool-macOS.zip dist/WildlifeTool.app
+          elif [ "${{ runner.os }}" == "Windows" ]; then
+            7z a WildlifeTool-Windows.zip ./dist/WildlifeTool.exe
+          fi
+        shell: bash
 
-      # Debugging Step: List the contents of the dist folder to see what was created.
-      - name: List build artifacts for debugging
-        if: failure()
-        run: ls -R dist
-
-      # Corrected Zipping Step: This zips the entire application folder.
-      - name: Zip the Windows App
-        run: Compress-Archive -Path dist/WildlifeDistance -DestinationPath WildlifeDistance-Windows.zip
-
-      - name: Upload Windows Artifact
+      # Step 6: Upload the packaged zip file as an artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: windows-build
-          path: WildlifeDistance-Windows.zip
+          name: wildlife-tool-${{ matrix.os }}
+          path: WildlifeTool-*.zip
 
-  # --- JOB 3: Create the GitHub Release ---
-  create-release:
-    needs: [build-macos, build-windows]
+  release:
+    # This job depends on the 'build' job finishing successfully for both OSs
+    needs: build
     runs-on: ubuntu-latest
 
     steps:
-      - name: Download macOS build
+      # Step 1: Download all the artifacts (the zip files) from the build jobs
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          name: macos-build
+          path: artifacts
 
-      - name: Download Windows build
-        uses: actions/download-artifact@v4
+      # Step 2: Use a special action to create a new GitHub Release
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          name: windows-build
-      
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+          tag_name: v${{ github.run_number }}
+          release_name: Release v${{ github.run_number }}
+          body: |
+            Automated release of the Wildlife Distance Tool.
+            Download the appropriate version for your operating system below.
+          draft: false
+          prerelease: false
+
+      # Step 3: Upload the macOS and Windows zip files to the new release
+      - name: Upload Release Assets
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          # Use the tag that triggered the workflow for the release name
-          tag_name: ${{ github.ref_name }}
-          name: Release ${{ github.ref_name }}
-          # Automatically generate release notes from your commit messages
-          generate_release_notes: true
-          files: |
-            WildlifeDistance-macOS.zip
-            WildlifeDistance-Windows.zip
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./artifacts/wildlife-tool-macos-latest/WildlifeTool-macOS.zip
+          asset_name: WildlifeTool-macOS.zip
+          asset_content_type: application/zip
+      - name: Upload Windows Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./artifacts/wildlife-tool-windows-latest/WildlifeTool-Windows.zip
+          asset_name: WildlifeTool-Windows.zip
+          asset_content_type: application/zip
+
+
 
