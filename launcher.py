@@ -10,9 +10,8 @@ from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QPushButton, QLa
 from PyQt5.QtGui import QFont, QPixmap, QIcon
 from PyQt5.QtCore import Qt
 
-# --- MODIFIED: Import the main window classes from your other scripts ---
-from annotate_train_DPT import AnnotationTool 
-from calculator_DPT import DistanceCalculator
+# --- IMPORTANT: The heavy imports are NO LONGER here ---
+# They are moved inside the button-click functions for fast startup.
 
 def resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
@@ -36,7 +35,7 @@ class AppLauncher(QWidget):
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
 
-        # --- MODIFIED: Keep track of the tool windows ---
+        # Keep track of the tool windows
         self.annotation_window = None
         self.calculator_window = None
 
@@ -87,18 +86,26 @@ class AppLauncher(QWidget):
         layout.addWidget(footer)
 
     def open_annotation_tool(self):
-        """--- MODIFIED: Create and show the annotation tool window ---"""
+        """Creates and shows the annotation tool window on demand."""
+        # --- MODIFICATION: Import is done here, only when needed ---
+        from annotate_train_DPT import AnnotationTool
+        
         # Create an instance of the window if it doesn't exist yet
         if not self.annotation_window:
             self.annotation_window = AnnotationTool()
+            
         self.annotation_window.show()
         self.annotation_window.activateWindow() # Bring to front
 
     def open_calculator_tool(self):
-        """--- MODIFIED: Create and show the calculator tool window ---"""
+        """Creates and shows the calculator tool window on demand."""
+        # --- MODIFICATION: Import is done here, only when needed ---
+        from calculator_DPT import DistanceCalculator
+        
         # Create an instance of the window if it doesn't exist yet
         if not self.calculator_window:
             self.calculator_window = DistanceCalculator()
+            
         self.calculator_window.show()
         self.calculator_window.activateWindow() # Bring to front
 
