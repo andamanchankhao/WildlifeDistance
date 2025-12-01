@@ -92,7 +92,105 @@ class DPTWorker(QThread):
         except Exception as e:
             self.error.emit(f"Failed to generate depth map: {str(e)}")
 
+class AutoDetectWorker(QThread):
+    """Worker thread for auto-detecting animals and calculating distances."""
+    progress_update = pyqtSignal(int, int, str) # current, total, status_message
+    detection_found = pyqtSignal(str, list, float, float) # image_path, coords, distance, confidence
+    finished = pyqtSignal()
+    error = pyqtSignal(str)
 
+    def __init__(self, image_files, dpt_model, dpt_processor, regression_model, scaler, device):
+        super().__init__()
+        self.image_files = image_files
+        self.dpt_model = dpt_model
+        self.dpt_processor = dpt_processor
+        self.regression_model = regression_model
+        self.scaler = scaler
+        self.device = device
+        self.yolo_model = None
+        self.is_running = True
+
+    def run(self):
+        try:
+            self.progress_update.emit(0, len(self.image_files), "Loading Object Detection Model...")
+            # Load YOLOv5s from torch hub (pretrained on COCO)
+            # COCO animal classes: bird, cat, dog, horse, sheep, cow, elephant, bear, zebra, giraffe
+            # Class IDs: 14-23 (roughly, need to check specific model mapping or use names)
+            try:
+                self.yolo_model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True, trust_repo=True)
+                self.yolo_model.to(self.device)
+                self.yolo_model.eval()
+            except Exception as e:
+                self.error.emit(f"Failed to load YOLOv5 model: {e}")
+                return
+
+            # COCO classes that are animals
+            ANIMAL_CLASSES = [
+                'bird', 'cat', 'dog', 'horse', 'sheep', 'cow', 
+                'elephant', 'bear', 'zebra', 'giraffe'
+            ]
+
+            for i, img_path in enumerate(self.image_files):
+                if not self.is_running: break
+                
+                self.progress_update.emit(i + 1, len(self.image_files), f"Processing {os.path.basename(img_path)}...")
+                
+                img_cv = cv2.imread(img_path)
+                if img_cv is None: continue
+
+                # 1. Object Detection
+                results = self.yolo_model(img_cv)
+                detections = results.pandas().xyxy[0] # Get results as pandas dataframe
+
+                # Filter for animals
+                animal_detections = detections[detections['name'].isin(ANIMAL_CLASSES)]
+                
+                if animal_detections.empty:
+                    continue
+
+                # 2. Generate Depth Map (Only if we have detections)
+                # Re-use the generation logic (duplicated from DPTWorker for simplicity in this thread)
+                img_rgb = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
+                inputs = self.dpt_processor(images=img_rgb, return_tensors="pt")
+                inputs = {k: v.to(self.device) for k, v in inputs.items()}
+                
+                with torch.no_grad():
+                    outputs = self.dpt_model(**inputs)
+                    predicted_depth = outputs.predicted_depth.squeeze().cpu().numpy()
+                
+                depth_map = cv2.resize(
+                    predicted_depth,
+                    (img_cv.shape[1], img_cv.shape[0]),
+                    interpolation=cv2.INTER_CUBIC
+                )
+
+                # 3. Calculate Distance for each detection
+                for _, row in animal_detections.iterrows():
+                    # Calculate center of bounding box
+                    x_center = int((row['xmin'] + row['xmax']) / 2)
+                    y_center = int((row['ymin'] + row['ymax']) / 2)
+                    
+                    # Ensure within bounds
+                    h, w = depth_map.shape
+                    x_center = max(0, min(w-1, x_center))
+                    y_center = max(0, min(h-1, y_center))
+
+                    # Get depth and predict
+                    depth_val = depth_map[y_center, x_center]
+                    scaled_depth = self.scaler.transform(np.array([[depth_val]]))[0, 0]
+                    distance = self.regression_model.predict(np.array([[scaled_depth]], dtype=np.float32))[0, 0]
+
+                    self.detection_found.emit(img_path, [x_center, y_center], float(distance), row['confidence'])
+
+            self.finished.emit()
+
+        except Exception as e:
+            self.error.emit(f"Error during auto-calculation: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def stop(self):
+        self.is_running = False
 class DistanceCalculator(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -146,13 +244,15 @@ class DistanceCalculator(QMainWindow):
     def _create_left_panel(self):
         """Creates the left panel widget containing controls and thumbnails."""
         panel = QWidget()
+        panel.setObjectName("GlassPanel") # Apply glass style
         layout = QVBoxLayout(panel)
-        panel.setMaximumWidth(250)
+        panel.setMaximumWidth(280) # Slightly wider for better spacing
 
         # Model/Scaler Loading Group
         model_scaler_group = QWidget()
         model_scaler_layout = QVBoxLayout(model_scaler_group)
-        model_scaler_group.setStyleSheet("QWidget { border: 1px solid #cccccc; border-radius: 5px; padding: 5px; }")
+        # Removed inline style to use QSS
+
 
         self.load_keras_model_btn = QPushButton("Load Keras Model")
         self.load_keras_model_btn.clicked.connect(self.load_keras_model_file)
@@ -173,6 +273,12 @@ class DistanceCalculator(QMainWindow):
         self.load_dir_btn.clicked.connect(self.load_image_directory)
         layout.addWidget(self.load_dir_btn)
 
+        # Auto-Calculate Button
+        self.auto_calc_btn = QPushButton("Auto-Calculate All")
+        self.auto_calc_btn.clicked.connect(self.auto_calculate_all)
+        self.auto_calc_btn.setEnabled(False) # Disabled until everything is loaded
+        layout.addWidget(self.auto_calc_btn)
+
         # Thumbnail List
         self.thumbnail_list_widget = QListWidget()
         self.thumbnail_list_widget.setIconSize(QSize(100, 80))
@@ -184,6 +290,7 @@ class DistanceCalculator(QMainWindow):
     def _create_right_panel(self):
         """Creates the right panel containing the image viewer and results table."""
         panel = QWidget()
+        panel.setObjectName("GlassPanel") # Apply glass style
         layout = QVBoxLayout(panel)
 
         content_layout = QHBoxLayout()
@@ -418,7 +525,7 @@ class DistanceCalculator(QMainWindow):
 
         text_item = self.graphics_scene.addText(display_text)
         text_item.setDefaultTextColor(text_color)
-        text_item.setFont(QFont("Arial", 16, QFont.Bold))
+        text_item.setFont(QFont("Arial", 32, QFont.Bold))
         text_item.setPos(x + 15, y - 40) # Position text relative to the point
 
         annotation_data['graphics_items'] = [line1, line2, text_item]
@@ -544,6 +651,15 @@ class DistanceCalculator(QMainWindow):
         self.next_btn.setEnabled(can_navigate and self.current_image_index < len(self.image_files) - 1)
         self.export_csv_btn.setEnabled(any(self.image_data.values()))
         self.show_dpt_btn.setEnabled(self.current_image_cv is not None and self.dpt_model is not None)
+        
+        # Enable Auto-Calc only if we have images, model, scaler, and DPT
+        can_auto_calc = (
+            bool(self.image_files) and 
+            self.regression_model is not None and 
+            self.scaler is not None and 
+            self.dpt_model is not None
+        )
+        self.auto_calc_btn.setEnabled(can_auto_calc)
 
     def update_results_table(self):
         self.results_table.setRowCount(0)
@@ -641,8 +757,94 @@ class DistanceCalculator(QMainWindow):
         self.graphics_view.fitInView(self.graphics_scene.itemsBoundingRect(), Qt.KeepAspectRatio)
 
 
+    def auto_calculate_all(self):
+        """Starts the auto-detection and calculation process."""
+        if not self.image_files: return
+        
+        self.progress_dialog = QProgressDialog("Initializing Auto-Calculation...", "Cancel", 0, len(self.image_files), self)
+        self.progress_dialog.setWindowModality(Qt.WindowModal)
+        self.progress_dialog.show()
+
+        self.auto_worker = AutoDetectWorker(
+            self.image_files, self.dpt_model, self.dpt_processor, 
+            self.regression_model, self.scaler, self.device
+        )
+        self.auto_worker.progress_update.connect(self.on_auto_calc_progress)
+        self.auto_worker.detection_found.connect(self.on_auto_detection_found)
+        self.auto_worker.finished.connect(self.on_auto_calc_finished)
+        self.auto_worker.error.connect(self.on_auto_calc_error)
+        self.auto_worker.start()
+
+    def on_auto_calc_progress(self, current, total, message):
+        self.progress_dialog.setLabelText(message)
+        self.progress_dialog.setValue(current)
+        if self.progress_dialog.wasCanceled():
+            self.auto_worker.stop()
+
+    def on_auto_detection_found(self, image_path, coords, distance, confidence):
+        # Create annotation data structure
+        new_annotation = {
+            'id': self.next_annotation_id,
+            'image_path': image_path,
+            'coords': coords,
+            'predicted_distance': distance,
+            'graphics_items': []
+        }
+        self.next_annotation_id += 1
+
+        if image_path not in self.image_data:
+            self.image_data[image_path] = []
+        self.image_data[image_path].append(new_annotation)
+
+        # If this is the current image, draw it immediately
+        if image_path == self.current_image_path:
+            self.draw_annotation_on_scene(new_annotation)
+            self.update_results_table()
+
+    def on_auto_calc_finished(self):
+        self.progress_dialog.close()
+        self.update_thumbnail_status()
+        self.update_results_table()
+        QMessageBox.information(self, "Auto-Calculation Complete", "Finished processing all images.")
+
+    def on_auto_calc_error(self, message):
+        self.progress_dialog.close()
+        QMessageBox.critical(self, "Auto-Calculation Error", message)
+
+    def check_and_autoload_files(self, directory):
+        """Scans the directory for .keras and .joblib files and auto-loads them if unique."""
+        files = os.listdir(directory)
+        keras_files = [f for f in files if f.endswith('.keras') or f.endswith('.h5')]
+        joblib_files = [f for f in files if f.endswith('.joblib')]
+
+        if len(keras_files) == 1:
+            model_path = os.path.join(directory, keras_files[0])
+            self.load_keras_model_from_path(model_path)
+        
+        if len(joblib_files) == 1:
+            scaler_path = os.path.join(directory, joblib_files[0])
+            self.load_scaler_from_path(scaler_path)
+
+    def load_keras_model_from_path(self, file_path):
+        try:
+            self.regression_model = load_model(file_path)
+            self.model_status_label.setText(f"Model: <font color='green'><b>Loaded</b></font>")
+            self.status_label.setText(f"Auto-loaded model: {os.path.basename(file_path)}")
+        except Exception as e:
+            print(f"Failed to auto-load model: {e}")
+
+    def load_scaler_from_path(self, file_path):
+        try:
+            self.scaler = joblib.load(file_path)
+            self.scaler_status_label.setText(f"Scaler: <font color='green'><b>Loaded</b></font>")
+            self.status_label.setText(f"Auto-loaded scaler: {os.path.basename(file_path)}")
+        except Exception as e:
+            print(f"Failed to auto-load scaler: {e}")
+
 if __name__ == "__main__":
+    from styles import apply_theme
     app = QApplication(sys.argv)
+    apply_theme(app)
     window = DistanceCalculator()
     window.show()
     sys.exit(app.exec_())

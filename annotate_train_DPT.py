@@ -6,6 +6,7 @@
 import sys
 import os
 import json
+import tempfile
 from typing import Dict, List, Optional, Tuple
 
 import cv2
@@ -16,8 +17,8 @@ from PyQt5.QtWidgets import (
     QFileDialog, QMessageBox, QDialog, QSizePolicy, QListWidget,
     QListWidgetItem, QTableWidget, QTableWidgetItem, QHeaderView
 )
-from PyQt5.QtGui import QPixmap, QImage, QPainter, QColor, QPen, QFont
-from PyQt5.QtCore import Qt, QPointF, QRectF, QThread, pyqtSignal, QTemporaryFile, QSize
+from PyQt5.QtGui import QPixmap, QImage, QPainter, QColor, QPen, QFont, QPolygonF, QBrush
+from PyQt5.QtCore import Qt, QPointF, QRectF, QThread, pyqtSignal, QSize
 
 # --- Dependency Imports with Graceful Fallbacks ---
 
@@ -72,8 +73,9 @@ MODEL_FILENAME_TEMPLATE = "{camera_id}_distance_model.keras"
 SCALER_FILENAME_TEMPLATE = "{camera_id}_scaler.joblib"
 THUMBNAIL_SIZE = QSize(90, 90)
 ANNOTATION_PEN = QPen(QColor("red"), 2)
-ANNOTATION_FONT = QFont("Arial", 16, QFont.Bold)
+ANNOTATION_FONT = QFont("Arial", 32, QFont.Bold) # Increased font size
 TEMP_RECT_PEN = QPen(QColor("red"), 2, Qt.DashLine)
+TEMP_LINE_PEN = QPen(QColor("red"), 1, Qt.DashLine)
 
 # --- Helper Functions ---
 def convert_cv_to_qpixmap(cv_img: np.ndarray) -> QPixmap:
@@ -108,6 +110,29 @@ def generate_dpt_depth_map(cv_img: np.ndarray, processor, model, device: str) ->
     except Exception as e:
         print(f"Error during DPT depth map generation: {e}")
         return None
+
+class DPTWorker(QThread):
+    """ Worker thread exclusively for running the DPT model to generate a depth map. """
+    finished = pyqtSignal(object)
+    error = pyqtSignal(str)
+
+    def __init__(self, dpt_model, dpt_processor, device, image_cv):
+        super().__init__()
+        self.dpt_model = dpt_model
+        self.dpt_processor = dpt_processor
+        self.device = device
+        self.image_cv = image_cv
+
+    def run(self):
+        try:
+            # Re-use the helper function logic but inside the thread
+            depth_map = generate_dpt_depth_map(self.image_cv, self.dpt_processor, self.dpt_model, self.device)
+            if depth_map is not None:
+                self.finished.emit(depth_map)
+            else:
+                self.error.emit("Failed to generate depth map (returned None).")
+        except Exception as e:
+            self.error.emit(f"Failed to generate depth map: {str(e)}")
 
 # --- PyQt GUI Classes ---
 
@@ -212,18 +237,20 @@ class TrainingThread(QThread):
         self.save_dir = save_dir
         self.camera_id = camera_id
 
-    def get_depth_for_bbox(self, depth_map: np.ndarray, bbox_coords: List[int]) -> Optional[float]:
-        """Extracts a representative depth value (median) from a bounding box."""
-        x_min, y_min, x_max, y_max = bbox_coords
-        h, w = depth_map.shape
-        x_min, y_min = max(0, x_min), max(0, y_min)
-        x_max, y_max = min(w, x_max), min(h, y_max)
-
-        if x_max <= x_min or y_max <= y_min:
+    def get_depth_for_polygon(self, depth_map: np.ndarray, polygon_coords: List[List[int]]) -> Optional[float]:
+        """Extracts a representative depth value (median) from a polygon area."""
+        if not polygon_coords or len(polygon_coords) < 3:
             return None
 
-        cropped_depth = depth_map[y_min:y_max, x_min:x_max]
-        valid_depths = cropped_depth[np.isfinite(cropped_depth)]
+        # Create a mask for the polygon
+        h, w = depth_map.shape
+        mask = np.zeros((h, w), dtype=np.uint8)
+        pts = np.array(polygon_coords, dtype=np.int32)
+        cv2.fillPoly(mask, [pts], 1)
+
+        # Extract depth values where mask is 1
+        valid_depths = depth_map[mask == 1]
+        valid_depths = valid_depths[np.isfinite(valid_depths)]
 
         return np.median(valid_depths) if valid_depths.size > 0 else None
 
@@ -259,7 +286,22 @@ class TrainingThread(QThread):
 
                 if depth_map is None: continue
 
-                bbox_depth = self.get_depth_for_bbox(depth_map, ann["coordinates"])
+                if depth_map is None: continue
+
+                # Handle both old (bbox) and new (polygon) formats
+                coords = ann["coordinates"]
+                bbox_depth = None
+                
+                if isinstance(coords[0], list): # Polygon: [[x,y], [x,y], ...]
+                     bbox_depth = self.get_depth_for_polygon(depth_map, coords)
+                else: # Legacy BBox: [x1, y1, x2, y2]
+                     # Convert bbox to polygon for consistent processing or keep legacy handler
+                     # For simplicity, we'll just handle it as a bbox here if we kept the method, 
+                     # but since we replaced it, let's convert bbox to polygon points
+                     x1, y1, x2, y2 = coords
+                     poly_pts = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+                     bbox_depth = self.get_depth_for_polygon(depth_map, poly_pts)
+
                 if bbox_depth is not None:
                     X_features.append([bbox_depth])
                     y_labels.append(ann["distance_meters"])
@@ -325,7 +367,7 @@ class TrainingThread(QThread):
 
             # Generate Plot
             if plt:
-                with QTemporaryFile(suffix=".png", delete=False) as temp_file:
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
                     plot_path = temp_file.name
                 
                 plt.figure(figsize=(8, 6))
@@ -344,11 +386,14 @@ class TrainingThread(QThread):
 
             # Save Model
             model_path = os.path.join(self.save_dir, MODEL_FILENAME_TEMPLATE.format(camera_id=self.camera_id))
+            print(f"Attempting to save model to: {model_path}")
             model.save(model_path)
+            print(f"Model successfully saved to: {model_path}")
             self.update_status.emit(f"Model saved to {model_path}")
 
         except Exception as e:
             self.update_status.emit(f"An error occurred during training: {e}")
+            print(f"TRAINING ERROR: {e}")
             import traceback
             traceback.print_exc()
         finally:
@@ -360,8 +405,10 @@ class CustomGraphicsView(QGraphicsView):
     mouse_pressed = pyqtSignal(object)
     mouse_moved = pyqtSignal(object)
     mouse_released = pyqtSignal(object)
+    mouse_double_clicked = pyqtSignal(object)
 
     def mousePressEvent(self, event):
+        print(f"DEBUG: Mouse Press - Button: {event.button()}")
         self.mouse_pressed.emit(event)
         super().mousePressEvent(event)
 
@@ -372,6 +419,11 @@ class CustomGraphicsView(QGraphicsView):
     def mouseReleaseEvent(self, event):
         self.mouse_released.emit(event)
         super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        print("DEBUG: Mouse Double Click")
+        self.mouse_double_clicked.emit(event)
+        super().mouseDoubleClickEvent(event)
 
 class AnnotationTool(QMainWindow):
     """Main application window for the annotation tool."""
@@ -390,9 +442,9 @@ class AnnotationTool(QMainWindow):
         self.is_dpt_view_active = False
         
         # Drawing state
-        self.drawing_rect = False
-        self.start_point = QPointF()
-        self.current_rect_item = None
+        self.drawing_polygon = False
+        self.current_polygon_points = []
+        self.current_temp_items = [] # To store temporary lines/points
         
         # DPT Model components
         self.dpt_processor = self.dpt_model = None
@@ -402,6 +454,12 @@ class AnnotationTool(QMainWindow):
         self.training_thread: Optional[TrainingThread] = None
         self.plot_window: Optional[PlotWindow] = None
         self.image_item_map: Dict[str, ThumbnailItemWidget] = {}
+
+        self.image_item_map: Dict[str, ThumbnailItemWidget] = {}
+
+        # DPT Worker
+        self.dpt_worker = None
+        self.progress_dialog = None
 
         self.init_ui()
         self.load_dpt_inference_model()
@@ -427,7 +485,10 @@ class AnnotationTool(QMainWindow):
         main_layout = QHBoxLayout(central_widget)
 
         # --- Left Panel (Directory and Thumbnails) ---
-        left_panel = QVBoxLayout()
+        left_panel_widget = QWidget()
+        left_panel_widget.setObjectName("GlassPanel")
+        left_panel = QVBoxLayout(left_panel_widget)
+        
         self.load_dir_btn = QPushButton("Load Directory")
         self.load_dir_btn.clicked.connect(self.load_directory)
         left_panel.addWidget(self.load_dir_btn)
@@ -438,11 +499,14 @@ class AnnotationTool(QMainWindow):
         self.thumbnail_list_widget.setIconSize(THUMBNAIL_SIZE)
         self.thumbnail_list_widget.setSpacing(5)
         self.thumbnail_list_widget.itemClicked.connect(self._on_thumbnail_clicked)
+        self.thumbnail_list_widget.itemClicked.connect(self._on_thumbnail_clicked)
         left_panel.addWidget(self.thumbnail_list_widget)
-        main_layout.addLayout(left_panel)
+        main_layout.addWidget(left_panel_widget)
 
         # --- Center Panel (Image Viewer) ---
-        center_panel = QVBoxLayout()
+        center_panel_widget = QWidget()
+        center_panel_widget.setObjectName("GlassPanel")
+        center_panel = QVBoxLayout(center_panel_widget)
         image_nav_layout = QHBoxLayout()
         self.prev_btn = QPushButton("<")
         self.prev_btn.setFixedSize(30, 30)
@@ -456,7 +520,7 @@ class AnnotationTool(QMainWindow):
         self.graphics_view.setMouseTracking(True)
         self.graphics_view.mouse_pressed.connect(self.mouse_press_event)
         self.graphics_view.mouse_moved.connect(self.mouse_move_event)
-        self.graphics_view.mouse_released.connect(self.mouse_release_event)
+        self.graphics_view.mouse_double_clicked.connect(self.mouse_double_click_event)
         image_nav_layout.addWidget(self.graphics_view)
 
         self.next_btn = QPushButton(">")
@@ -474,12 +538,15 @@ class AnnotationTool(QMainWindow):
         self.show_dpt_btn.setCheckable(True)
         self.show_dpt_btn.toggled.connect(self.toggle_dpt_view)
         controls_layout.addWidget(self.show_dpt_btn)
+        controls_layout.addWidget(self.show_dpt_btn)
         center_panel.addLayout(controls_layout)
-        main_layout.addLayout(center_panel, 1)
+        main_layout.addWidget(center_panel_widget, 1)
 
         # --- Right Panel (Annotations Table and Metrics) ---
-        right_panel = QVBoxLayout()
-        right_panel.setContentsMargins(5, 0, 5, 0)
+        right_panel_widget = QWidget()
+        right_panel_widget.setObjectName("GlassPanel")
+        right_panel = QVBoxLayout(right_panel_widget)
+        right_panel.setContentsMargins(10, 10, 10, 10)
         self.annotation_table = QTableWidget()
         self.annotation_table.setColumnCount(3)
         self.annotation_table.setHorizontalHeaderLabels(["Image", "Coordinates", "Distance (m)"])
@@ -501,7 +568,7 @@ class AnnotationTool(QMainWindow):
         self.metrics_label.setWordWrap(True)
         self.metrics_label.setMinimumHeight(100)
         right_panel.addWidget(self.metrics_label, 0, Qt.AlignTop)
-        main_layout.addLayout(right_panel)
+        main_layout.addWidget(right_panel_widget)
         
         # --- Status Bar ---
         self.status_label = QLabel("Ready")
@@ -616,58 +683,103 @@ class AnnotationTool(QMainWindow):
             super().keyPressEvent(event)
             
     def mouse_press_event(self, event):
-        if event.button() == Qt.LeftButton and not self.is_dpt_view_active:
-            self.start_point = self.graphics_view.mapToScene(event.pos())
-            self.drawing_rect = True
-            self.current_rect_item = self.graphics_scene.addRect(
-                QRectF(self.start_point, self.start_point), TEMP_RECT_PEN
-            )
+        if not self.is_dpt_view_active:
+            scene_pos = self.graphics_view.mapToScene(event.pos())
+            
+            if event.button() == Qt.LeftButton:
+                # Add point to polygon
+                self.drawing_polygon = True
+                self.current_polygon_points.append(scene_pos)
+                
+                # Draw a small circle for the point
+                r = 3
+                dot = self.graphics_scene.addEllipse(scene_pos.x()-r, scene_pos.y()-r, r*2, r*2, ANNOTATION_PEN, QBrush(Qt.red))
+                self.current_temp_items.append(dot)
+                
+                # Draw line from previous point if exists
+                if len(self.current_polygon_points) > 1:
+                    line = self.graphics_scene.addLine(
+                        self.current_polygon_points[-2].x(), self.current_polygon_points[-2].y(),
+                        scene_pos.x(), scene_pos.y(),
+                        ANNOTATION_PEN
+                    )
+                    self.current_temp_items.append(line)
+
+            elif event.button() == Qt.RightButton and self.drawing_polygon:
+                # Finish polygon
+                if len(self.current_polygon_points) < 3:
+                    self.status_label.setText("Polygon must have at least 3 points.")
+                    return
+                
+                self.finish_polygon_annotation()
 
     def mouse_move_event(self, event):
         scene_pos = self.graphics_view.mapToScene(event.pos())
         self.statusBar().showMessage(f"Coordinates: ({int(scene_pos.x())}, {int(scene_pos.y())})")
-        if self.drawing_rect and self.current_rect_item:
-            rect = QRectF(self.start_point, scene_pos).normalized()
-            self.current_rect_item.setRect(rect)
+        
+        # Optional: Draw rubber band line from last point to cursor
+        # (Implementation omitted for brevity/cleanliness, but can be added if requested)
 
-    def mouse_release_event(self, event):
-        if event.button() == Qt.LeftButton and self.drawing_rect:
-            self.drawing_rect = False
-            if self.current_rect_item:
-                rect = self.current_rect_item.rect()
-                self.graphics_scene.removeItem(self.current_rect_item)
-                self.current_rect_item = None
-                
-                if rect.width() < 5 or rect.height() < 5:
-                    self.status_label.setText("Annotation cancelled: Bounding box too small.")
-                    return
+    def mouse_double_click_event(self, event):
+        """Handle double click to finish polygon."""
+        if self.drawing_polygon:
+            print("DEBUG: Double click detected, finishing polygon.")
+            self.finish_polygon_annotation()
 
-                distance, ok = QInputDialog.getDouble(self, "Enter Distance", "Distance (meters):", 0.0, 0.0, 1000.0, 2)
-                if ok:
-                    coords = [int(rect.left()), int(rect.top()), int(rect.right()), int(rect.bottom())]
-                    annotation = {
-                        "type": "bounding_box",
-                        "coordinates": coords,
-                        "distance_meters": distance,
-                        "image_path": self.current_image_path # Store path for easy reference
-                    }
-                    self.annotations_by_image[self.current_image_path].append(annotation)
-                    self.draw_annotation(annotation)
-                    self.update_annotation_table()
-                    self.image_item_map[self.current_image_path].set_annotated_status(True)
+    def finish_polygon_annotation(self):
+        print("DEBUG: Finishing polygon annotation.")
+        self.drawing_polygon = False
+        
+        # Clean up temp items
+        for item in self.current_temp_items:
+            self.graphics_scene.removeItem(item)
+        self.current_temp_items = []
+        
+        distance, ok = QInputDialog.getDouble(self, "Enter Distance", "Distance (meters):", 0.0, 0.0, 1000.0, 2)
+        if ok:
+            # Convert QPointF to list of [x, y]
+            coords = [[int(p.x()), int(p.y())] for p in self.current_polygon_points]
+            
+            annotation = {
+                "type": "polygon",
+                "coordinates": coords,
+                "distance_meters": distance,
+                "image_path": self.current_image_path
+            }
+            self.annotations_by_image[self.current_image_path].append(annotation)
+            self.draw_annotation(annotation)
+            self.update_annotation_table()
+            self.image_item_map[self.current_image_path].set_annotated_status(True)
+        
+        self.current_polygon_points = []
 
     def draw_annotation(self, annotation: Dict):
         """Draws a single annotation on the scene and stores its Qt items."""
         coords = annotation["coordinates"]
-        rect = QRectF(coords[0], coords[1], coords[2] - coords[0], coords[3] - coords[1])
-        rect_item = self.graphics_scene.addRect(rect, ANNOTATION_PEN)
+        
+        qt_items = []
+        
+        # Handle legacy bbox [x1, y1, x2, y2]
+        if isinstance(coords[0], int):
+             x1, y1, x2, y2 = coords
+             rect = QRectF(x1, y1, x2-x1, y2-y1)
+             rect_item = self.graphics_scene.addRect(rect, ANNOTATION_PEN)
+             text_pos = rect.topLeft()
+             qt_items.append(rect_item)
+        else:
+            # Polygon [[x,y], ...]
+            polygon = QPolygonF([QPointF(pt[0], pt[1]) for pt in coords])
+            poly_item = self.graphics_scene.addPolygon(polygon, ANNOTATION_PEN)
+            text_pos = polygon.boundingRect().topLeft()
+            qt_items.append(poly_item)
 
         text_item = self.graphics_scene.addText(f"{annotation['distance_meters']:.2f}m", ANNOTATION_FONT)
         text_item.setDefaultTextColor(ANNOTATION_PEN.color())
-        text_item.setPos(rect.topLeft() - QPointF(0, ANNOTATION_FONT.pointSize() * 1.2))
+        text_item.setPos(text_pos - QPointF(0, ANNOTATION_FONT.pointSize() * 1.5))
+        qt_items.append(text_item)
         
         # Store Qt graphics items with the annotation for easy removal
-        annotation['qt_items'] = [rect_item, text_item]
+        annotation['qt_items'] = qt_items
 
     def draw_existing_annotations(self):
         if self.current_image_path:
@@ -783,20 +895,38 @@ class AnnotationTool(QMainWindow):
             return
 
         if checked:
-            depth_map = generate_dpt_depth_map(self.current_image_cv, self.dpt_processor, self.dpt_model, self.device)
-            if depth_map is not None:
-                # Normalize for visualization
-                norm_depth = cv2.normalize(depth_map, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
-                depth_img_bgr = cv2.cvtColor(norm_depth, cv2.COLOR_GRAY2BGR)
-                self.display_image(depth_img_bgr)
-                self.show_dpt_btn.setText("Show Real Image")
-            else:
-                self.status_label.setText("Failed to generate DPT depth map.")
-                self.show_dpt_btn.setChecked(False)
+            # Use Worker Thread to prevent freezing
+            from PyQt5.QtWidgets import QProgressDialog
+            self.progress_dialog = QProgressDialog("Generating Depth Map...", "Cancel", 0, 0, self)
+            self.progress_dialog.setWindowModality(Qt.WindowModal)
+            self.progress_dialog.show()
+
+            self.dpt_worker = DPTWorker(self.dpt_model, self.dpt_processor, self.device, self.current_image_cv)
+            self.dpt_worker.finished.connect(self.on_dpt_generated)
+            self.dpt_worker.error.connect(self.on_dpt_error)
+            self.dpt_worker.start()
         else:
             self.display_image(self.current_image_cv)
             self.draw_existing_annotations()
             self.show_dpt_btn.setText("Show DPT Depth")
+
+    def on_dpt_generated(self, depth_map):
+        self.progress_dialog.close()
+        if depth_map is not None:
+            # Normalize for visualization
+            norm_depth = cv2.normalize(depth_map, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
+            depth_img_bgr = cv2.cvtColor(norm_depth, cv2.COLOR_GRAY2BGR)
+            self.display_image(depth_img_bgr)
+            self.show_dpt_btn.setText("Show Real Image")
+        else:
+            self.status_label.setText("Failed to generate DPT depth map.")
+            self.show_dpt_btn.setChecked(False)
+
+    def on_dpt_error(self, msg):
+        self.progress_dialog.close()
+        self.status_label.setText(f"Error: {msg}")
+        self.show_dpt_btn.setChecked(False)
+        QMessageBox.critical(self, "DPT Error", msg)
 
     def start_training(self):
         if not self.image_directory or not self.camera_id:
@@ -850,7 +980,9 @@ class AnnotationTool(QMainWindow):
 
 def main():
     """Main function to initialize and run the PyQt application."""
+    from styles import apply_theme
     app = QApplication.instance() or QApplication(sys.argv)
+    apply_theme(app)
     window = AnnotationTool()
     window.show()
     sys.exit(app.exec_())

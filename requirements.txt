@@ -8,3 +8,6 @@ torch
 opencv-python
 pyinstaller
 numpy
+ultralytics
+pandas
+seaborn

@@ -1,6 +1,14 @@
-# -*- mode: python ; coding: utf-8 -*-
+import sys
+import os
 
 block_cipher = None
+
+# Determine OS
+is_mac = sys.platform == 'darwin'
+is_win = sys.platform == 'win32'
+
+# Icon selection
+icon_file = 'icon.icns' if is_mac else 'icon.ico'
 
 a = Analysis(
     ['launcher.py'],
@@ -9,6 +17,7 @@ a = Analysis(
     datas=[
         ('annotate_train_DPT.py', '.'),
         ('calculator_DPT.py', '.'),
+        ('styles.py', '.'), # Include the new styles file
         ('icon.png', '.'),
     ],
     hiddenimports=[],
@@ -42,11 +51,14 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='icon.ico'
+    icon=icon_file
 )
-app = BUNDLE(
-    exe,
-    name='WildlifeDistance.app',
-    icon='icon.icns',
-    bundle_identifier=None,
-)
+
+# BUNDLE is only for macOS .app bundles
+if is_mac:
+    app = BUNDLE(
+        exe,
+        name='WildlifeDistance.app',
+        icon='icon.icns',
+        bundle_identifier=None,
+    )

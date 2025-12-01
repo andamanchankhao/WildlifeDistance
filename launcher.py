@@ -58,10 +58,10 @@ class AppLauncher(QWidget):
 
         # --- Title ---
         title = QLabel("Wildlife Distance Tool", self)
-        title.setFont(QFont('Arial', 18, QFont.Bold))
+        title.setObjectName("TitleLabel") # Hook for CSS
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
-        layout.addSpacing(20)
+        layout.addSpacing(30)
 
         # --- Buttons ---
         annotate_btn = QPushButton("Annotate & Train Tool", self)
@@ -110,7 +110,9 @@ class AppLauncher(QWidget):
         self.calculator_window.activateWindow() # Bring to front
 
 if __name__ == "__main__":
+    from styles import apply_theme # Import the theme
     app = QApplication(sys.argv)
+    apply_theme(app) # Apply the theme
     launcher = AppLauncher()
     launcher.show()
     sys.exit(app.exec_())
