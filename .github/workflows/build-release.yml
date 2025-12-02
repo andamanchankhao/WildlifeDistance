@@ -7,7 +7,7 @@ name: Build and Release Wildlife Distance
 on:
   push:
     tags:
-      - 'v0.7.5'
+      - 'v0.7.6'
 
 # Grant the necessary permissions for creating a release and uploading assets
 permissions:
@@ -53,7 +53,7 @@ jobs:
       - name: Build with PyInstaller
         run: pyinstaller WildlifeDistance.spec --noconfirm
 
-      # Step 6: Package the final application into a zip file
+      # Step 6: Package the final application into a zip file (macOS: .app, Windows: .exe)
       - name: Package application
         run: |
           if [ "${{ runner.os }}" == "macOS" ]; then

@@ -8,11 +8,13 @@ import os
 import cv2
 import numpy as np
 import csv
+import joblib # Added joblib import
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QGraphicsView, QGraphicsScene, QFileDialog,
     QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView,
-    QListWidget, QListWidgetItem, QGraphicsPixmapItem, QProgressDialog
+    QListWidget, QListWidgetItem, QGraphicsPixmapItem, QProgressDialog,
+    QSplitter
 )
 from PyQt5.QtGui import QPixmap, QImage, QPainter, QColor, QFont, QIcon, QPen
 from PyQt5.QtCore import Qt, QSize, pyqtSignal, QThread
@@ -46,6 +48,7 @@ except ImportError:
 APP_TITLE = "Wildlife Distance Calculator"
 TABLE_HEADERS = ["ID", "Image", "Distance (m)", "Coordinates"]
 VALID_IMAGE_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.gif', '.bmp')
+MODEL_FILENAME_TEMPLATE = "{camera_id}_distance_model.joblib"
 
 class CustomGraphicsView(QGraphicsView):
     """ A QGraphicsView subclass that emits signals for mouse press and move events. """
@@ -59,6 +62,21 @@ class CustomGraphicsView(QGraphicsView):
     def mouseMoveEvent(self, event):
         self.mouse_moved.emit(event)
         super().mouseMoveEvent(event)
+
+    def resizeEvent(self, event):
+        if self.scene():
+            self.fitInView(self.scene().itemsBoundingRect(), Qt.KeepAspectRatio)
+        super().resizeEvent(event)
+
+class ResponsiveListWidget(QListWidget):
+    """A QListWidget that automatically resizes its icons to fit the width."""
+    def resizeEvent(self, event):
+        width = event.size().width()
+        # Calculate new icon size (subtracting scrollbar width and margins)
+        new_size = width - 25 
+        if new_size > 50: # Minimum size
+            self.setIconSize(QSize(new_size, int(new_size * 0.75))) # Maintain aspect ratio roughly
+        super().resizeEvent(event)
 
 class DPTWorker(QThread):
     """ Worker thread exclusively for running the DPT model to generate a depth map. """
@@ -99,13 +117,12 @@ class AutoDetectWorker(QThread):
     finished = pyqtSignal()
     error = pyqtSignal(str)
 
-    def __init__(self, image_files, dpt_model, dpt_processor, regression_model, scaler, device):
+    def __init__(self, image_files, dpt_model, dpt_processor, distance_model, device):
         super().__init__()
         self.image_files = image_files
         self.dpt_model = dpt_model
         self.dpt_processor = dpt_processor
-        self.regression_model = regression_model
-        self.scaler = scaler
+        self.distance_model = distance_model
         self.device = device
         self.yolo_model = None
         self.is_running = True
@@ -177,8 +194,8 @@ class AutoDetectWorker(QThread):
 
                     # Get depth and predict
                     depth_val = depth_map[y_center, x_center]
-                    scaled_depth = self.scaler.transform(np.array([[depth_val]]))[0, 0]
-                    distance = self.regression_model.predict(np.array([[scaled_depth]], dtype=np.float32))[0, 0]
+                    inverse_depth = 1.0 / (depth_val + 1e-6)
+                    distance = self.distance_model.predict(np.array([[inverse_depth]], dtype=np.float32))[0]
 
                     self.detection_found.emit(img_path, [x_center, y_center], float(distance), row['confidence'])
 
@@ -191,24 +208,28 @@ class AutoDetectWorker(QThread):
 
     def stop(self):
         self.is_running = False
+MODEL_FILENAME_TEMPLATE = "{camera_id}_distance_model.joblib"
+
 class DistanceCalculator(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(APP_TITLE)
+        self.setWindowTitle("Wildlife Distance Calculator (DPT)")
         self.setGeometry(100, 100, 1400, 900)
 
         # Model and data state
-        self.regression_model = None
-        self.scaler = None
+        # Model and data state
+        self.distance_model = None
         self.image_files = []
-        self.current_image_index = -1
+        self.current_image_index = 0
         self.image_data = {} # Stores annotations: {image_path: [annotation_dict, ...]}
         self.next_annotation_id = 0
+        self.camera_id = "default" # Default camera ID
 
         # Image and graphics state
         self.current_image_path = None
         self.current_image_cv = None
         self.current_depth_map = None # REVISED: Cache for the depth map
+        self._pending_coords_for_prediction = None
         self.current_pixmap_item = None
         self.is_dpt_view_active = False
 
@@ -232,11 +253,20 @@ class DistanceCalculator(QMainWindow):
         main_layout = QHBoxLayout(central_widget)
 
         # --- Create and add panels to the main layout ---
+        # --- Create and add panels to the main layout ---
+        splitter = QSplitter(Qt.Horizontal)
+        
         left_panel = self._create_left_panel()
         right_panel = self._create_right_panel()
 
-        main_layout.addWidget(left_panel, 1) # Left panel takes 1 part of the space
-        main_layout.addWidget(right_panel, 4) # Right panel takes 4 parts
+        splitter.addWidget(left_panel)
+        splitter.addWidget(right_panel)
+        
+        # Set initial sizes (approximate 1:4 ratio)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 4)
+
+        main_layout.addWidget(splitter)
 
         self.status_label = QLabel("Ready. Please load a Keras model and a scaler file.")
         self.statusBar().addWidget(self.status_label)
@@ -246,7 +276,12 @@ class DistanceCalculator(QMainWindow):
         panel = QWidget()
         panel.setObjectName("GlassPanel") # Apply glass style
         layout = QVBoxLayout(panel)
-        panel.setMaximumWidth(280) # Slightly wider for better spacing
+        # panel.setMaximumWidth(280) # Removed to allow resizing
+
+        # Image Directory Controls
+        self.load_dir_btn = QPushButton("Load Image Directory")
+        self.load_dir_btn.clicked.connect(self.load_image_directory)
+        layout.addWidget(self.load_dir_btn)
 
         # Model/Scaler Loading Group
         model_scaler_group = QWidget()
@@ -254,24 +289,13 @@ class DistanceCalculator(QMainWindow):
         # Removed inline style to use QSS
 
 
-        self.load_keras_model_btn = QPushButton("Load Keras Model")
-        self.load_keras_model_btn.clicked.connect(self.load_keras_model_file)
+        self.load_model_btn = QPushButton("Load Distance Model")
+        self.load_model_btn.clicked.connect(self.load_distance_model)
         self.model_status_label = QLabel("Model: <font color='red'>Not Loaded</font>")
         
-        self.load_scaler_btn = QPushButton("Load Scaler")
-        self.load_scaler_btn.clicked.connect(self.load_joblib_scaler_file)
-        self.scaler_status_label = QLabel("Scaler: <font color='red'>Not Loaded</font>")
-
-        model_scaler_layout.addWidget(self.load_keras_model_btn)
+        model_scaler_layout.addWidget(self.load_model_btn)
         model_scaler_layout.addWidget(self.model_status_label)
-        model_scaler_layout.addWidget(self.load_scaler_btn)
-        model_scaler_layout.addWidget(self.scaler_status_label)
         layout.addWidget(model_scaler_group)
-
-        # Image Directory Controls
-        self.load_dir_btn = QPushButton("Load Image Directory")
-        self.load_dir_btn.clicked.connect(self.load_image_directory)
-        layout.addWidget(self.load_dir_btn)
 
         # Auto-Calculate Button
         self.auto_calc_btn = QPushButton("Auto-Calculate All")
@@ -280,7 +304,7 @@ class DistanceCalculator(QMainWindow):
         layout.addWidget(self.auto_calc_btn)
 
         # Thumbnail List
-        self.thumbnail_list_widget = QListWidget()
+        self.thumbnail_list_widget = ResponsiveListWidget()
         self.thumbnail_list_widget.setIconSize(QSize(100, 80))
         self.thumbnail_list_widget.itemClicked.connect(self.thumbnail_clicked)
         layout.addWidget(self.thumbnail_list_widget)
@@ -383,41 +407,37 @@ class DistanceCalculator(QMainWindow):
             self.status_label.setText(f"Failed to load DPT model: {e}")
             QMessageBox.critical(self, "DPT Model Error", f"Could not load the DPT model from Hugging Face. Please check your internet connection.\n\nError: {e}")
 
-    def load_keras_model_file(self):
-        """Opens a file dialog to load a Keras model."""
-        if tf is None:
-            QMessageBox.critical(self, "Error", "TensorFlow is not installed. Cannot load Keras model.")
-            return
+    def load_distance_model(self):
+        """Loads the trained distance estimation model (Linear Regression)."""
+        # Try to auto-load based on camera ID
+        model_path = os.path.join(os.path.dirname(self.image_files[0]) if self.image_files else ".", MODEL_FILENAME_TEMPLATE.format(camera_id=self.camera_id))
+        
+        if os.path.exists(model_path):
+            try:
+                self.distance_model = joblib.load(model_path)
+                self.model_status_label.setText(f"Model: <font color='green'><b>Loaded ({os.path.basename(model_path)})</b></font>")
+                self.status_label.setText(f"Distance model loaded: {os.path.basename(model_path)}")
+                self.auto_calc_btn.setEnabled(True)
+                return
+            except Exception as e:
+                print(f"Auto-load failed: {e}")
 
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select Keras Model", "", "Keras Models (*.keras *.h5)")
+        # Fallback to manual selection
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Distance Model", "", "Joblib Models (*.joblib)")
         if file_path:
             try:
-                self.regression_model = load_model(file_path)
+                self.distance_model = joblib.load(file_path)
                 self.model_status_label.setText(f"Model: <font color='green'><b>Loaded</b></font>")
-                self.status_label.setText("Keras model loaded successfully.")
+                self.status_label.setText("Distance model loaded successfully.")
+                self.auto_calc_btn.setEnabled(True)
             except Exception as e:
-                self.regression_model = None
+                self.distance_model = None
                 self.model_status_label.setText("Model: <font color='red'>Load Failed</font>")
-                QMessageBox.critical(self, "Load Error", f"Failed to load Keras model:\n{str(e)}")
-
-    def load_joblib_scaler_file(self):
-        """Opens a file dialog to load a Joblib scaler file."""
-        if joblib is None:
-            QMessageBox.critical(self, "Error", "Joblib/Scikit-learn is not installed. Cannot load scaler.")
-            return
-
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select Joblib Scaler", "", "Joblib Files (*.joblib)")
-        if file_path:
-            try:
-                self.scaler = joblib.load(file_path)
-                if not hasattr(self.scaler, 'transform'):
-                    raise ValueError("Loaded object is not a valid scaler.")
-                self.scaler_status_label.setText(f"Scaler: <font color='green'><b>Loaded</b></font>")
-                self.status_label.setText("Scaler loaded successfully.")
-            except Exception as e:
-                self.scaler = None
-                self.scaler_status_label.setText("Scaler: <font color='red'>Load Failed</font>")
-                QMessageBox.critical(self, "Load Error", f"Failed to load scaler file:\n{str(e)}")
+                QMessageBox.critical(self, "Load Error", f"Failed to load distance model:\n{str(e)}")
+        else:
+            self.distance_model = None
+            self.model_status_label.setText("Model: <font color='red'>Not Loaded</font>")
+            self.auto_calc_btn.setEnabled(False)
 
     def load_image_directory(self):
         """Loads all supported images from a user-selected directory."""
@@ -440,10 +460,37 @@ class DistanceCalculator(QMainWindow):
             self.current_image_index = 0
             self.display_image(self.image_files[self.current_image_index])
             self.status_label.setText(f"Loaded {len(self.image_files)} images.")
+            
+            # Auto-detect model
+            self.check_and_autoload_model(directory)
         else:
             self.status_label.setText("No supported image files found in the selected directory.")
         
         self.update_navigation_buttons_state()
+
+    def check_and_autoload_model(self, directory):
+        """Scans the directory for a .joblib distance model and auto-loads it."""
+        try:
+            files = os.listdir(directory)
+            # Prioritize files ending with 'distance_model.joblib' (covers both 'distance_model.joblib' and '{id}_distance_model.joblib')
+            model_files = [f for f in files if f.endswith('distance_model.joblib')]
+            
+            # If none found, look for any .joblib file
+            if not model_files:
+                model_files = [f for f in files if f.endswith('.joblib')]
+            
+            if model_files:
+                # Load the first matching file
+                model_path = os.path.join(directory, model_files[0])
+                self.distance_model = joblib.load(model_path)
+                self.model_status_label.setText(f"Model: <font color='green'><b>Loaded ({model_files[0]})</b></font>")
+                self.status_label.setText(f"Auto-loaded model: {model_files[0]}")
+                self.auto_calc_btn.setEnabled(True)
+            else:
+                self.status_label.setText("No model found in directory. Please load manually.")
+        except Exception as e:
+            print(f"Failed to auto-load model: {e}")
+            self.status_label.setText(f"Auto-load failed: {e}")
 
     def add_thumbnail(self, image_path):
         """Creates and adds a thumbnail to the list widget."""
@@ -498,7 +545,7 @@ class DistanceCalculator(QMainWindow):
         """Updates the visual state of thumbnails (selection and background color)."""
         for path, item in self.thumbnail_items.items():
             has_data = path in self.image_data and bool(self.image_data[path])
-            item.setBackground(QColor(180, 255, 180) if has_data else Qt.transparent)
+            item.setBackground(QColor(80, 200, 120) if has_data else Qt.transparent)
             
             if path == self.current_image_path:
                 item.setSelected(True)
@@ -519,14 +566,14 @@ class DistanceCalculator(QMainWindow):
         display_text = f"ID:{ann_id} | {distance:.2f}m"
 
         # Draw a cross instead of "X" for better centering
-        pen = QPen(pen_color, 3)
+        pen = QPen(pen_color, 6)
         line1 = self.graphics_scene.addLine(x - 10, y, x + 10, y, pen)
         line2 = self.graphics_scene.addLine(x, y - 10, x, y + 10, pen)
 
         text_item = self.graphics_scene.addText(display_text)
         text_item.setDefaultTextColor(text_color)
-        text_item.setFont(QFont("Arial", 32, QFont.Bold))
-        text_item.setPos(x + 15, y - 40) # Position text relative to the point
+        text_item.setFont(QFont("Arial", 52, QFont.Bold))
+        text_item.setPos(x + 15, y - 30) # Position text relative to the point
 
         annotation_data['graphics_items'] = [line1, line2, text_item]
 
@@ -546,8 +593,8 @@ class DistanceCalculator(QMainWindow):
         if self.is_dpt_view_active:
             self.status_label.setText("Cannot select points on the depth map. Please switch to the real image.")
             return
-        if not all([self.current_image_cv is not None, self.regression_model, self.scaler]):
-            QMessageBox.warning(self, "Prerequisites Missing", "Please ensure an image directory, Keras model, and scaler are all loaded.")
+        if not all([self.current_image_cv is not None, self.distance_model]):
+            QMessageBox.warning(self, "Prerequisites Missing", "Please ensure an image directory and distance model are loaded.")
             return
 
         if event.button() == Qt.LeftButton:
@@ -588,9 +635,15 @@ class DistanceCalculator(QMainWindow):
         """Callback for when the DPT worker successfully finishes."""
         self.progress_dialog.close()
         self.current_depth_map = depth_map # Cache the result
-        self.status_label.setText("Depth map generated. Predicting distance...")
-        self.predict_distance_from_depth(self._pending_coords_for_prediction, depth_map)
-        del self._pending_coords_for_prediction # Clean up
+        
+        if self._pending_coords_for_prediction is not None:
+            self.status_label.setText("Depth map generated. Predicting distance...")
+            self.predict_distance_from_depth(self._pending_coords_for_prediction, depth_map)
+            self._pending_coords_for_prediction = None # Clean up
+        else:
+            self.status_label.setText("Depth map generated.")
+            # We triggered this from toggle_dpt_view, so now we should actually toggle the view
+            self.toggle_dpt_view()
 
     def on_dpt_error(self, error_message):
         """Callback for when the DPT worker encounters an error."""
@@ -603,10 +656,16 @@ class DistanceCalculator(QMainWindow):
         x, y = coords
         depth_feature = depth_map[y, x]
 
-        # Scaling and Prediction
-        scaled_feature = self.scaler.transform(np.array([[depth_feature]]))[0, 0]
-        input_data = np.array([[scaled_feature]], dtype=np.float32)
-        predicted_distance = self.regression_model.predict(input_data)[0, 0]
+        # Use 1/depth feature
+        inverse_depth = 1.0 / (depth_feature + 1e-6)
+        input_data = np.array([[inverse_depth]], dtype=np.float32)
+        
+        try:
+            predicted_distance = self.distance_model.predict(input_data)[0]
+        except Exception as e:
+            print(f"Prediction error: {e}")
+            self.status_label.setText(f"Prediction error: {e}")
+            return
 
         # Create and store the new annotation
         new_annotation = {
@@ -652,27 +711,48 @@ class DistanceCalculator(QMainWindow):
         self.export_csv_btn.setEnabled(any(self.image_data.values()))
         self.show_dpt_btn.setEnabled(self.current_image_cv is not None and self.dpt_model is not None)
         
-        # Enable Auto-Calc only if we have images, model, scaler, and DPT
+        # Enable Auto-Calc only if we have images, model, and DPT
         can_auto_calc = (
             bool(self.image_files) and 
-            self.regression_model is not None and 
-            self.scaler is not None and 
+            self.distance_model is not None and 
             self.dpt_model is not None
         )
         self.auto_calc_btn.setEnabled(can_auto_calc)
 
     def update_results_table(self):
         self.results_table.setRowCount(0)
-        if self.current_image_path in self.image_data:
-            annotations = self.image_data[self.current_image_path]
-            self.results_table.setRowCount(len(annotations))
-            for i, ann in enumerate(annotations):
-                self.results_table.setItem(i, 0, QTableWidgetItem(str(ann['id'])))
-                self.results_table.setItem(i, 1, QTableWidgetItem(os.path.basename(ann['image_path'])))
-                self.results_table.setItem(i, 2, QTableWidgetItem(f"{ann['predicted_distance']:.2f}"))
-                self.results_table.setItem(i, 3, QTableWidgetItem(f"({ann['coords'][0]}, {ann['coords'][1]})"))
         
-        self.export_csv_btn.setEnabled(any(self.image_data.values()))
+        # Collect all annotations from all images
+        all_annotations = []
+        for annotations in self.image_data.values():
+            all_annotations.extend(annotations)
+            
+        # Sort by ID for consistent display
+        all_annotations.sort(key=lambda x: x['id'])
+        
+        self.results_table.setRowCount(len(all_annotations))
+        
+        for i, ann in enumerate(all_annotations):
+            # Create items
+            id_item = QTableWidgetItem(str(ann['id']))
+            name_item = QTableWidgetItem(os.path.basename(ann['image_path']))
+            dist_item = QTableWidgetItem(f"{ann['predicted_distance']:.2f}")
+            coord_item = QTableWidgetItem(f"({ann['coords'][0]}, {ann['coords'][1]})")
+            
+            # Highlight if it belongs to the current image
+            if ann['image_path'] == self.current_image_path:
+                highlight_color = QColor(80, 200, 120) # Light Green
+                id_item.setBackground(highlight_color)
+                name_item.setBackground(highlight_color)
+                dist_item.setBackground(highlight_color)
+                coord_item.setBackground(highlight_color)
+            
+            self.results_table.setItem(i, 0, id_item)
+            self.results_table.setItem(i, 1, name_item)
+            self.results_table.setItem(i, 2, dist_item)
+            self.results_table.setItem(i, 3, coord_item)
+        
+        self.export_csv_btn.setEnabled(bool(all_annotations))
         self.update_delete_button_state()
 
     def update_delete_button_state(self):
@@ -686,17 +766,24 @@ class DistanceCalculator(QMainWindow):
         ann_id_to_delete = int(self.results_table.item(row_to_delete, 0).text())
 
         # Find and remove annotation from data and scene
-        annotations = self.image_data.get(self.current_image_path, [])
-        ann_to_remove = next((ann for ann in annotations if ann['id'] == ann_id_to_delete), None)
-        if ann_to_remove:
-            for item in ann_to_remove.get('graphics_items', []):
-                if item in self.graphics_scene.items():
-                    self.graphics_scene.removeItem(item)
-            annotations.remove(ann_to_remove)
-            self.status_label.setText(f"Deleted annotation ID {ann_id_to_delete}.")
-
-        self.update_results_table()
-        self.update_thumbnail_status()
+        found = False
+        for image_path, annotations in self.image_data.items():
+            ann_to_remove = next((ann for ann in annotations if ann['id'] == ann_id_to_delete), None)
+            if ann_to_remove:
+                # Remove graphics items if it's the current image
+                if image_path == self.current_image_path:
+                    for item in ann_to_remove.get('graphics_items', []):
+                        if item in self.graphics_scene.items():
+                            self.graphics_scene.removeItem(item)
+                
+                annotations.remove(ann_to_remove)
+                self.status_label.setText(f"Deleted annotation ID {ann_id_to_delete}.")
+                found = True
+                break
+        
+        if found:
+            self.update_results_table()
+            self.update_thumbnail_status()
 
     def export_to_csv(self):
         """Exports all calculated distances to a single CSV file."""
@@ -727,7 +814,18 @@ class DistanceCalculator(QMainWindow):
     def toggle_dpt_view(self):
         """Toggles the view between the real image and its DPT depth map."""
         if self.current_depth_map is None:
-            QMessageBox.information(self, "Generate Depth Map", "Please click on the image once to generate the depth map before viewing it.")
+            # Generate it first
+            self.status_label.setText("Generating depth map for visualization...")
+            self.progress_dialog = QProgressDialog("Generating Depth Map...", "Cancel", 0, 0, self)
+            self.progress_dialog.setWindowModality(Qt.WindowModal)
+            self.progress_dialog.show()
+
+            self.dpt_worker = DPTWorker(self.dpt_model, self.dpt_processor, self.device, self.current_image_cv.copy())
+            self._pending_coords_for_prediction = None # Signal that this is just for viewing
+            
+            self.dpt_worker.finished.connect(self.on_depth_map_generated)
+            self.dpt_worker.error.connect(self.on_dpt_error)
+            self.dpt_worker.start()
             return
 
         self.is_dpt_view_active = not self.is_dpt_view_active
@@ -767,7 +865,7 @@ class DistanceCalculator(QMainWindow):
 
         self.auto_worker = AutoDetectWorker(
             self.image_files, self.dpt_model, self.dpt_processor, 
-            self.regression_model, self.scaler, self.device
+            self.distance_model, self.device
         )
         self.auto_worker.progress_update.connect(self.on_auto_calc_progress)
         self.auto_worker.detection_found.connect(self.on_auto_detection_found)
@@ -810,36 +908,6 @@ class DistanceCalculator(QMainWindow):
     def on_auto_calc_error(self, message):
         self.progress_dialog.close()
         QMessageBox.critical(self, "Auto-Calculation Error", message)
-
-    def check_and_autoload_files(self, directory):
-        """Scans the directory for .keras and .joblib files and auto-loads them if unique."""
-        files = os.listdir(directory)
-        keras_files = [f for f in files if f.endswith('.keras') or f.endswith('.h5')]
-        joblib_files = [f for f in files if f.endswith('.joblib')]
-
-        if len(keras_files) == 1:
-            model_path = os.path.join(directory, keras_files[0])
-            self.load_keras_model_from_path(model_path)
-        
-        if len(joblib_files) == 1:
-            scaler_path = os.path.join(directory, joblib_files[0])
-            self.load_scaler_from_path(scaler_path)
-
-    def load_keras_model_from_path(self, file_path):
-        try:
-            self.regression_model = load_model(file_path)
-            self.model_status_label.setText(f"Model: <font color='green'><b>Loaded</b></font>")
-            self.status_label.setText(f"Auto-loaded model: {os.path.basename(file_path)}")
-        except Exception as e:
-            print(f"Failed to auto-load model: {e}")
-
-    def load_scaler_from_path(self, file_path):
-        try:
-            self.scaler = joblib.load(file_path)
-            self.scaler_status_label.setText(f"Scaler: <font color='green'><b>Loaded</b></font>")
-            self.status_label.setText(f"Auto-loaded scaler: {os.path.basename(file_path)}")
-        except Exception as e:
-            print(f"Failed to auto-load scaler: {e}")
 
 if __name__ == "__main__":
     from styles import apply_theme

@@ -15,7 +15,8 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QGraphicsView, QGraphicsScene, QInputDialog,
     QFileDialog, QMessageBox, QDialog, QSizePolicy, QListWidget,
-    QListWidgetItem, QTableWidget, QTableWidgetItem, QHeaderView
+    QListWidgetItem, QTableWidget, QTableWidgetItem, QHeaderView,
+    QSplitter
 )
 from PyQt5.QtGui import QPixmap, QImage, QPainter, QColor, QPen, QFont, QPolygonF, QBrush
 from PyQt5.QtCore import Qt, QPointF, QRectF, QThread, pyqtSignal, QSize
@@ -226,8 +227,10 @@ class TrainingThread(QThread):
     training_finished = pyqtSignal()
     final_metrics_report = pyqtSignal(str)
     plot_generated = pyqtSignal(str)
+    depth_plot_generated = pyqtSignal(str) # Fixed: Added missing signal
+    training_results_available = pyqtSignal(object)
 
-    def __init__(self, image_files: List[str], annotations: Dict[str, List], dpt_processor, dpt_model, device: str, save_dir: str, camera_id: str):
+    def __init__(self, image_files: List[str], annotations: Dict[str, List], dpt_processor, dpt_model, device: str, save_dir: str):
         super().__init__()
         self.image_files = image_files
         self.annotations = annotations
@@ -235,7 +238,7 @@ class TrainingThread(QThread):
         self.dpt_model = dpt_model
         self.device = device
         self.save_dir = save_dir
-        self.camera_id = camera_id
+        self.is_running = True
 
     def get_depth_for_polygon(self, depth_map: np.ndarray, polygon_coords: List[List[int]]) -> Optional[float]:
         """Extracts a representative depth value (median) from a polygon area."""
@@ -256,14 +259,15 @@ class TrainingThread(QThread):
 
     def run(self):
         """The main training logic executed in the worker thread."""
-        if tf is None:
-            self.update_status.emit("Error: TensorFlow is not installed. Training aborted.")
+        if any(lib is None for lib in [mean_absolute_error, r2_score, joblib]):
+            self.update_status.emit("Error: Scikit-learn or Joblib not installed. Training aborted.")
             self.training_finished.emit()
             return
 
         try:
             self.update_status.emit("Preparing data for training...")
             X_features, y_labels = [], []
+            image_paths_for_features = [] # Track image paths for results
             depth_map_cache = {}
 
             all_annotations = [ann for anns in self.annotations.values() for ann in anns]
@@ -286,8 +290,6 @@ class TrainingThread(QThread):
 
                 if depth_map is None: continue
 
-                if depth_map is None: continue
-
                 # Handle both old (bbox) and new (polygon) formats
                 coords = ann["coordinates"]
                 bbox_depth = None
@@ -295,86 +297,71 @@ class TrainingThread(QThread):
                 if isinstance(coords[0], list): # Polygon: [[x,y], [x,y], ...]
                      bbox_depth = self.get_depth_for_polygon(depth_map, coords)
                 else: # Legacy BBox: [x1, y1, x2, y2]
-                     # Convert bbox to polygon for consistent processing or keep legacy handler
-                     # For simplicity, we'll just handle it as a bbox here if we kept the method, 
-                     # but since we replaced it, let's convert bbox to polygon points
                      x1, y1, x2, y2 = coords
                      poly_pts = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
                      bbox_depth = self.get_depth_for_polygon(depth_map, poly_pts)
 
                 if bbox_depth is not None:
-                    X_features.append([bbox_depth])
+                    # DPT output is often inversely proportional to distance (disparity).
+                    # We use 1/depth as the primary feature for Linear Regression.
+                    inverse_depth = 1.0 / (bbox_depth + 1e-6)
+                    # We can also include raw depth to capture any non-linear bias, 
+                    # but for robust calibration with few points, simple 1/depth is often best.
+                    # Let's use [inverse_depth] as the feature.
+                    X_features.append([inverse_depth]) 
                     y_labels.append(ann["distance_meters"])
+                    image_paths_for_features.append(img_path)
 
             if not X_features:
                 self.update_status.emit("No valid features could be extracted. Training aborted.")
                 self.training_finished.emit()
                 return
 
-            X, y = np.array(X_features, dtype=np.float32), np.array(y_labels, dtype=np.float32)
-            self.update_status.emit(f"Extracted {len(X)} features. Preparing model...")
-
-            # Data Splitting
-            X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
-
-            # Feature Scaling
-            scaler = StandardScaler()
-            X_train_scaled = scaler.fit_transform(X_train)
-            X_val_scaled = scaler.transform(X_val)
+            X = np.array(X_features, dtype=np.float32)
+            y = np.array(y_labels, dtype=np.float32)
             
-            # Save Scaler
-            scaler_path = os.path.join(self.save_dir, SCALER_FILENAME_TEMPLATE.format(camera_id=self.camera_id))
-            joblib.dump(scaler, scaler_path)
-            self.update_status.emit(f"Scaler saved to {scaler_path}")
-            
-            # Build and Compile Model
-            inputs = Input(shape=(1,))
-            x = Dense(64, activation='relu')(inputs)
-            x = Dropout(0.2)(x)
-            x = Dense(32, activation='relu')(x)
-            x = Dropout(0.2)(x)
-            outputs = Dense(1)(x)
-            model = Model(inputs, outputs)
-            model.compile(optimizer='adam', loss='mse', metrics=[MeanAbsoluteError()])
-            
-            # Train Model
-            self.update_status.emit("Starting model training...")
-            model.fit(
-                X_train_scaled, y_train,
-                validation_data=(X_val_scaled, y_val),
-                epochs=50, batch_size=8,
-                callbacks=[PyQtCallback(self.update_status)],
-                verbose=0
-            )
+            # Keep raw depth for plotting/table (re-calculate from inverse)
+            # X_features was [1/d], so d = 1/X
+            X_raw_depth = 1.0 / (X[:, 0] + 1e-6)
 
-            self.update_status.emit("Training complete. Evaluating...")
+            self.update_status.emit(f"Extracted {len(X)} features. Training Linear Regression model...")
 
-            # Evaluation and Reporting
-            X_all_scaled = scaler.transform(X)
-            y_pred = model.predict(X_all_scaled).flatten()
+            # Train Linear Regression Model
+            # We use RANSACRegressor for robustness against outliers, or simple LinearRegression
+            from sklearn.linear_model import LinearRegression, RANSACRegressor
             
+            # Use LinearRegression if points are few, RANSAC if many? 
+            # With very few points, RANSAC might fail if min_samples is high.
+            # Let's use simple LinearRegression for stability on small data.
+            model = LinearRegression()
+            model.fit(X, y)
+            
+            y_pred = model.predict(X)
+
+            # Evaluation Metrics
             mae = mean_absolute_error(y, y_pred)
             rmse = np.sqrt(mean_squared_error(y, y_pred))
             r2 = r2_score(y, y_pred)
-            report = (
-                f"--- Training Metrics Report ---\n"
-                f"Camera ID: {self.camera_id}\n"
-                f"Mean Absolute Error (MAE): {mae:.4f} meters\n"
-                f"Root Mean Squared Error (RMSE): {rmse:.4f} meters\n"
-                f"R-squared (R²): {r2:.4f}"
-            )
-            self.final_metrics_report.emit(report)
+
+            metrics_text = f"MAE: {mae:.2f}m | RMSE: {rmse:.2f}m | R²: {r2:.2f}"
+            self.final_metrics_report.emit(metrics_text)
+            self.update_status.emit("Training complete. Generating plots...")
 
             # Generate Plot
             if plt:
+                # Plot 1: Actual vs. Predicted Distance
                 with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
                     plot_path = temp_file.name
                 
                 plt.figure(figsize=(8, 6))
                 plt.scatter(y, y_pred, alpha=0.7, label="Predictions")
-                min_val, max_val = min(y.min(), y_pred.min()), max(y.max(), y_pred.max())
-                plt.plot([min_val, max_val], [min_val, max_val], 'r--', label='Perfect Prediction')
-                plt.title(f"Actual vs. Predicted Distance (Camera: {self.camera_id})")
+                
+                # Perfect prediction line
+                min_val = min(y.min(), y_pred.min())
+                max_val = max(y.max(), y_pred.max())
+                plt.plot([min_val, max_val], [min_val, max_val], 'r--', label="Perfect Prediction")
+                
+                plt.title(f"Actual vs. Predicted Distance")
                 plt.xlabel("Actual Distance (meters)")
                 plt.ylabel("Predicted Distance (meters)")
                 plt.grid(True)
@@ -384,19 +371,62 @@ class TrainingThread(QThread):
                 plt.close()
                 self.plot_generated.emit(plot_path)
 
-            # Save Model
-            model_path = os.path.join(self.save_dir, MODEL_FILENAME_TEMPLATE.format(camera_id=self.camera_id))
+                # Plot 2: Calibration: DPT Depth vs. Distance
+                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
+                    depth_plot_path = temp_file.name
+
+                plt.figure(figsize=(8, 6))
+                # Plot Raw Depth vs Actual Distance
+                plt.scatter(X_raw_depth, y, alpha=0.7, label="Actual Data", color='blue')
+                plt.scatter(X_raw_depth, y_pred, alpha=0.7, label="Model Prediction", color='red', marker='x')
+                
+                # Sort for smooth line plot of the model
+                sort_idx = np.argsort(X_raw_depth)
+                plt.plot(X_raw_depth[sort_idx], y_pred[sort_idx], color='red', alpha=0.5, linestyle='--', label="Fit Curve")
+
+                plt.title(f"Calibration: DPT Depth vs. Distance")
+                plt.xlabel("DPT Depth Value")
+                plt.ylabel("Distance (meters)")
+                plt.grid(True)
+                plt.legend()
+                plt.tight_layout()
+                plt.savefig(depth_plot_path)
+                plt.close()
+                self.depth_plot_generated.emit(depth_plot_path)
+            else:
+                plot_path = None
+                depth_plot_path = None
+
+
+            # Emit detailed results
+            results = {
+                'y_true': y,
+                'y_pred': y_pred,
+                'X_raw': X_raw_depth, # Save raw depth
+                'image_paths': image_paths_for_features,
+                'metrics': {'mae': mae, 'rmse': rmse, 'r2': r2},
+                'plot_path': plot_path,
+                'depth_plot_path': depth_plot_path
+            }
+            self.training_results_available.emit(results)
+
+            # Save Model (Joblib)
+            model_path = os.path.join(self.save_dir, MODEL_FILENAME_TEMPLATE.replace('.keras', '.joblib'))
             print(f"Attempting to save model to: {model_path}")
-            model.save(model_path)
-            print(f"Model successfully saved to: {model_path}")
+            joblib.dump(model, model_path)
+            
+            # We don't need a separate scaler for LinearRegression on 1 feature, 
+            # but if we want to keep compatibility or future proofing, we can keep it.
+            # For now, let's just save the model.
+            
             self.update_status.emit(f"Model saved to {model_path}")
+            self.training_finished.emit()
 
         except Exception as e:
-            self.update_status.emit(f"An error occurred during training: {e}")
             print(f"TRAINING ERROR: {e}")
             import traceback
             traceback.print_exc()
-        finally:
+            self.update_status.emit(f"Error: {str(e)}")
             self.training_finished.emit()
 
 
@@ -425,6 +455,64 @@ class CustomGraphicsView(QGraphicsView):
         self.mouse_double_clicked.emit(event)
         super().mouseDoubleClickEvent(event)
 
+    def resizeEvent(self, event):
+        if self.scene():
+            self.fitInView(self.scene().itemsBoundingRect(), Qt.KeepAspectRatio)
+        super().resizeEvent(event)
+
+MODEL_FILENAME_TEMPLATE = "distance_model.keras"
+SCALER_FILENAME_TEMPLATE = "scaler.joblib"
+THUMBNAIL_SIZE = QSize(90, 90)
+ANNOTATION_PEN = QPen(QColor("red"), 2)
+ANNOTATION_FONT = QFont("Arial", 32, QFont.Bold) # Increased font size
+TEMP_RECT_PEN = QPen(QColor("red"), 2, Qt.DashLine)
+TEMP_LINE_PEN = QPen(QColor("red"), 1, Qt.DashLine)
+
+# --- Helper Functions ---
+def convert_cv_to_qpixmap(cv_img: np.ndarray) -> QPixmap:
+    """Converts an OpenCV image (BGR) to a QPixmap."""
+    if cv_img is None:
+        return QPixmap()
+    height, width, channel = cv_img.shape
+    bytes_per_line = 3 * width
+    q_img = QImage(cv_img.data, width, height, bytes_per_line, QImage.Format_RGB888).rgbSwapped()
+    return QPixmap.fromImage(q_img)
+
+def generate_dpt_depth_map(cv_img: np.ndarray, processor, model, device: str) -> Optional[np.ndarray]:
+    """Generates a depth map from an OpenCV image using a DPT model."""
+    if any(lib is None for lib in [cv_img, processor, model, torch]):
+        return None
+    try:
+        img_rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
+        inputs = processor(images=img_rgb, return_tensors="pt")
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+
+        with torch.no_grad():
+            outputs = model(**inputs)
+            predicted_depth = outputs.predicted_depth
+
+        prediction = torch.nn.functional.interpolate(
+            predicted_depth.unsqueeze(1),
+            size=cv_img.shape[:2],
+            mode="bicubic",
+            align_corners=False,
+        )
+        return prediction.squeeze().cpu().numpy()
+    except Exception as e:
+        print(f"DPT Generation Error: {e}")
+        return None
+
+class ResponsiveListWidget(QListWidget):
+    """A QListWidget that automatically resizes its icons to fit the width."""
+    def resizeEvent(self, event):
+        width = event.size().width()
+        # Calculate new icon size (subtracting scrollbar width and margins)
+        # Assuming a single column layout
+        new_size = width - 25 
+        if new_size > 50: # Minimum size
+            self.setIconSize(QSize(new_size, int(new_size * 0.75))) # Maintain aspect ratio roughly
+        super().resizeEvent(event)
+
 class AnnotationTool(QMainWindow):
     """Main application window for the annotation tool."""
     def __init__(self):
@@ -434,7 +522,6 @@ class AnnotationTool(QMainWindow):
 
         # State variables
         self.image_directory: Optional[str] = None
-        self.camera_id: Optional[str] = None
         self.image_files: List[str] = []
         self.current_image_path: Optional[str] = None
         self.current_image_cv: Optional[np.ndarray] = None
@@ -493,15 +580,18 @@ class AnnotationTool(QMainWindow):
         self.load_dir_btn.clicked.connect(self.load_directory)
         left_panel.addWidget(self.load_dir_btn)
 
-        self.thumbnail_list_widget = QListWidget()
-        self.thumbnail_list_widget.setFixedWidth(120)
+        self.thumbnail_list_widget = ResponsiveListWidget()
+        # self.thumbnail_list_widget.setFixedWidth(120) # Removed to allow resizing
         self.thumbnail_list_widget.setViewMode(QListWidget.IconMode)
         self.thumbnail_list_widget.setIconSize(THUMBNAIL_SIZE)
         self.thumbnail_list_widget.setSpacing(5)
         self.thumbnail_list_widget.itemClicked.connect(self._on_thumbnail_clicked)
         self.thumbnail_list_widget.itemClicked.connect(self._on_thumbnail_clicked)
         left_panel.addWidget(self.thumbnail_list_widget)
-        main_layout.addWidget(left_panel_widget)
+        
+        # --- Splitter Setup ---
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.addWidget(left_panel_widget)
 
         # --- Center Panel (Image Viewer) ---
         center_panel_widget = QWidget()
@@ -540,7 +630,7 @@ class AnnotationTool(QMainWindow):
         controls_layout.addWidget(self.show_dpt_btn)
         controls_layout.addWidget(self.show_dpt_btn)
         center_panel.addLayout(controls_layout)
-        main_layout.addWidget(center_panel_widget, 1)
+        splitter.addWidget(center_panel_widget)
 
         # --- Right Panel (Annotations Table and Metrics) ---
         right_panel_widget = QWidget()
@@ -568,7 +658,14 @@ class AnnotationTool(QMainWindow):
         self.metrics_label.setWordWrap(True)
         self.metrics_label.setMinimumHeight(100)
         right_panel.addWidget(self.metrics_label, 0, Qt.AlignTop)
-        main_layout.addWidget(right_panel_widget)
+        splitter.addWidget(right_panel_widget)
+        
+        # Set stretch factors (0: Left, 1: Center, 2: Right)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1) # Center panel takes more space
+        splitter.setStretchFactor(2, 0)
+        
+        main_layout.addWidget(splitter)
         
         # --- Status Bar ---
         self.status_label = QLabel("Ready")
@@ -587,14 +684,8 @@ class AnnotationTool(QMainWindow):
         if not directory:
             return
 
-        camera_id, ok = QInputDialog.getText(self, "Enter Camera Name", "Please provide a unique name for this camera:")
-        if not ok or not camera_id.strip():
-            QMessageBox.warning(self, "Input Required", "A camera name is required to proceed.")
-            return
-        
         self.save_annotations_for_current_image() # Save work before switching directory
         self.image_directory = directory
-        self.camera_id = camera_id.strip()
 
         self.image_files = sorted([os.path.join(directory, f) for f in os.listdir(directory) if f.lower().endswith(SUPPORTED_IMAGE_FORMATS)])
 
@@ -623,7 +714,7 @@ class AnnotationTool(QMainWindow):
             self.thumbnail_list_widget.setItemWidget(item, widget)
             self.image_item_map[img_path] = widget
             
-        self.status_label.setText(f"Loaded {len(self.image_files)} images for camera '{self.camera_id}'.")
+        self.status_label.setText(f"Loaded {len(self.image_files)} images.")
         self.load_image(self.image_files[0])
         self.update_annotation_table()
 
@@ -815,7 +906,7 @@ class AnnotationTool(QMainWindow):
                     item.setData(Qt.UserRole, ann)
                 
                 if ann['image_path'] == self.current_image_path:
-                    item.setBackground(QColor("lightyellow"))
+                    item.setBackground(QColor("lightgreen"))
 
                 self.annotation_table.setItem(row_idx, col_idx, item)
 
@@ -929,8 +1020,8 @@ class AnnotationTool(QMainWindow):
         QMessageBox.critical(self, "DPT Error", msg)
 
     def start_training(self):
-        if not self.image_directory or not self.camera_id:
-            QMessageBox.warning(self, "Not Ready", "Please load a directory and set a camera name first.")
+        if not self.image_directory:
+            QMessageBox.warning(self, "Not Ready", "Please load a directory first.")
             return
         if self.dpt_model is None:
             QMessageBox.warning(self, "DPT Model Error", "The DPT model is not loaded. Cannot start training.")
@@ -942,7 +1033,7 @@ class AnnotationTool(QMainWindow):
         
         self.training_thread = TrainingThread(
             self.image_files, self.annotations_by_image, self.dpt_processor,
-            self.dpt_model, self.device, self.image_directory, self.camera_id
+            self.dpt_model, self.device, self.image_directory
         )
         self.training_thread.update_status.connect(self.status_label.setText)
         self.training_thread.training_finished.connect(self.on_training_finished)
