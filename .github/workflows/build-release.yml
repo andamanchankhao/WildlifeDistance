@@ -7,7 +7,7 @@ name: Build and Release Wildlife Distance
 on:
   push:
     tags:
-      - 'v0.7.6'
+      - "v0.7.7"
 
 # Grant the necessary permissions for creating a release and uploading assets
 permissions:
@@ -32,7 +32,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11' # Specify a stable Python version
+          python-version: "3.11" # Specify a stable Python version
 
       # Step 3: Add caching for dependencies to speed up subsequent builds
       - name: Cache pip dependencies
@@ -95,4 +95,3 @@ jobs:
             Download the appropriate version for your operating system below.
           # This glob pattern will find and upload all .zip files from the artifacts subdirectories
           files: artifacts/*/*.zip
-
