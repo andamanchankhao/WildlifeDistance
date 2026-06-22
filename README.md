@@ -1,6 +1,12 @@
-# 🐯 Wildlife Distance Calculator
+<p align="center">
+  <img src="icon.png" width="120" height="120" alt="Wildlife Distance Logo">
+</p>
 
-A modern desktop application built with Python and PyQt5 for estimating wildlife distances from camera trap images. The application utilizes a combination of **YOLOv5** for animal detection, a **Dense Prediction Transformer (DPT)** for monocular depth estimation, and a machine learning regression model (TensorFlow/Keras) to map depth features to real-world distances.
+<h1 align="center">Wildlife Distance Calculator</h1>
+
+<p align="center">
+  A modern desktop application built with Python and PyQt5 for estimating wildlife distances from camera trap images. The application utilizes a combination of <b>YOLOv5</b> for animal detection, a <b>Dense Prediction Transformer (DPT)</b> for monocular depth estimation, and a machine learning regression model (TensorFlow/Keras) to map depth features to real-world distances.
+</p>
 
 ---
 
