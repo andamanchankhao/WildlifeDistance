@@ -256,11 +256,6 @@ class WildlifeDistanceApp(QMainWindow):
         title_label.setFont(QFont("Arial", 16, QFont.Bold))
         header_layout.addWidget(title_label)
 
-        # Status of DPT Model Loading
-        self.ai_status_label = QLabel(" ⚪ Loading AI model...")
-        self.ai_status_label.setStyleSheet("color: #777777; font-size: 12px; margin-left: 10px;")
-        header_layout.addWidget(self.ai_status_label, 0, Qt.AlignVCenter)
-
         header_layout.addStretch()
 
         # Version Badge (Top Right)
@@ -339,13 +334,7 @@ class WildlifeDistanceApp(QMainWindow):
         self.training_tool.status_label.setText("AI model loaded. Ready for training.")
         self.calculator_tool.status_label.setText("AI model loaded. Ready for calculations.")
 
-        # Update header status
-        if model is not None:
-            self.ai_status_label.setText(" 🟢 AI Model Ready")
-            self.ai_status_label.setStyleSheet("color: #2e7d32; font-weight: bold; font-size: 12px; margin-left: 10px;")
-        else:
-            self.ai_status_label.setText(" 🔴 AI Model Load Failed (Offline?)")
-            self.ai_status_label.setStyleSheet("color: #c82828; font-weight: bold; font-size: 12px; margin-left: 10px;")
+        pass
 
 
 if __name__ == "__main__":
