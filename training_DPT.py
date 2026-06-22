@@ -329,6 +329,9 @@ class TrainingTool(QWidget):
         # Only load DPT model internally if we did not receive a shared one.
         if self.dpt_model is None:
             self.load_dpt_inference_model()
+        elif self.dpt_model == "async":
+            self.status_label.setText("AI model is loading in the background...")
+            self.train_btn.setEnabled(False)
         else:
             self.status_label.setText(f"DPT model ready (shared, device={self.device}).")
             self.train_btn.setEnabled(False)  # Still need images to enable

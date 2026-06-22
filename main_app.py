@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (
     QTabWidget, QLabel, QHBoxLayout
 )
 from PyQt5.QtGui import QIcon, QPixmap, QFont
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
 
 # Import Refactored Components
 from annotate_train_DPT import AnnotationTool
@@ -69,6 +69,14 @@ def load_shared_dpt_model():
         return None, None, device
 
 
+class DPTModelLoaderThread(QThread):
+    model_loaded = pyqtSignal(object, object, str)
+
+    def run(self):
+        processor, model, device = load_shared_dpt_model()
+        self.model_loaded.emit(processor, model, device)
+
+
 def resource_path(relative_path):
     """Get absolute path to resource — works for dev and for PyInstaller."""
     try:
@@ -84,21 +92,22 @@ class WildlifeDistanceApp(QMainWindow):
     Theme: Minimal Red.
     """
 
-    def __init__(self, dpt_processor, dpt_model, device):
+    def __init__(self):
         super().__init__()
         self.setWindowTitle("Wildlife Distance")
         self.setGeometry(100, 100, 1600, 950)
 
         # Opt-1: Store shared DPT components to inject into each tool.
-        self._dpt_processor = dpt_processor
-        self._dpt_model = dpt_model
-        self._device = device
+        self._dpt_processor = "async"
+        self._dpt_model = "async"
+        self._device = "cpu"
 
         icon_path = resource_path('icon.png')
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
 
         self.init_ui()
+        self.start_model_loader()
 
     def init_ui(self):
         # Central Widget & Main Layout
@@ -126,6 +135,12 @@ class WildlifeDistanceApp(QMainWindow):
         title_label = QLabel("Wildlife Distance")
         title_label.setFont(QFont("Arial", 16, QFont.Bold))
         header_layout.addWidget(title_label)
+
+        # Status of DPT Model Loading
+        self.ai_status_label = QLabel(" ⚪ Loading AI model...")
+        self.ai_status_label.setStyleSheet("color: #777777; font-size: 12px; margin-left: 10px;")
+        header_layout.addWidget(self.ai_status_label, 0, Qt.AlignVCenter)
+
         header_layout.addStretch()
 
         # Version Badge (Top Right)
@@ -177,17 +192,48 @@ class WildlifeDistanceApp(QMainWindow):
 
         # Note: Each tool has its own local status bar.
 
+    def start_model_loader(self):
+        self.loader_thread = DPTModelLoaderThread()
+        self.loader_thread.model_loaded.connect(self.on_model_loaded)
+        self.loader_thread.start()
+
+    def on_model_loaded(self, processor, model, device):
+        self._dpt_processor = processor
+        self._dpt_model = model
+        self._device = device
+
+        # Distribute model references dynamically to the tabs
+        self.annotation_tool.dpt_processor = processor
+        self.annotation_tool.dpt_model = model
+        self.annotation_tool.device = device
+
+        self.training_tool.dpt_processor = processor
+        self.training_tool.dpt_model = model
+        self.training_tool.device = device
+
+        self.calculator_tool.dpt_processor = processor
+        self.calculator_tool.dpt_model = model
+        self.calculator_tool.device = device
+
+        # Update sub-status bars
+        self.annotation_tool.status_label.setText("AI model loaded. Ready for annotations.")
+        self.training_tool.status_label.setText("AI model loaded. Ready for training.")
+        self.calculator_tool.status_label.setText("AI model loaded. Ready for calculations.")
+
+        # Update header status
+        if model is not None:
+            self.ai_status_label.setText(" 🟢 AI Model Ready")
+            self.ai_status_label.setStyleSheet("color: #2e7d32; font-weight: bold; font-size: 12px; margin-left: 10px;")
+        else:
+            self.ai_status_label.setText(" 🔴 AI Model Load Failed (Offline?)")
+            self.ai_status_label.setStyleSheet("color: #c82828; font-weight: bold; font-size: 12px; margin-left: 10px;")
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     apply_theme(app)
 
-    # Opt-1: Load the DPT model once before the window opens.
-    # All three tabs will reuse this same object — no duplication.
-    print("Loading shared DPT model — please wait...")
-    dpt_processor, dpt_model, device = load_shared_dpt_model()
-
-    window = WildlifeDistanceApp(dpt_processor, dpt_model, device)
+    window = WildlifeDistanceApp()
     window.show()
 
     sys.exit(app.exec_())

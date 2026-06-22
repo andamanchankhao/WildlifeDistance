@@ -26,6 +26,10 @@ datas += [
     ('icon.png', '.'),
 ]
 
+if os.path.exists('fonts'):
+    datas += [('fonts', 'fonts')]
+
+
 a = Analysis(
     ['main_app.py'], # Entry point changed to main_app.py
     pathex=[], 

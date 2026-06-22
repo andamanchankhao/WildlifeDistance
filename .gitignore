@@ -1,0 +1,52 @@
+# --- Python Virtual Environment ---
+venv/
+.venv/
+env/
+ENV/
+bin/
+lib/
+include/
+
+# --- Python Caching & Compilation ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ipynb_checkpoints/
+
+# --- Machine Learning Models & Weights (Large Files) ---
+# Ignore raw YOLO weights and other deep learning model checkpoints
+yolov5s.pt
+*.pt
+*.onnx
+*.pb
+
+# Ignore generated/trained Keras and Joblib models
+*.keras
+*.h5
+*.joblib
+*.pkl
+
+# --- Local Data & Examples ---
+# Keep only wildlife images in the example folder (ignore generated JSON annotations and model files)
+example/**/*.json
+example/**/*.joblib
+
+# --- OS-specific Files ---
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+
+# --- IDEs and Text Editors ---
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# --- PyInstaller Build Artifacts ---
+# Exclude the folders where PyInstaller builds the executables
+build/
+dist/

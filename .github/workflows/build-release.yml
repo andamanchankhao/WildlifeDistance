@@ -7,7 +7,7 @@ name: Build and Release Wildlife Distance
 on:
   push:
     tags:
-      - "v0.7.7"
+      - "v0.7.*"
 
 # Grant the necessary permissions for creating a release and uploading assets
 permissions:
