@@ -34,17 +34,11 @@ jobs:
         with:
           python-version: "3.11" # Specify a stable Python version
 
-      # Step 3: Get pip cache directory and cache dependencies
-      - name: Get pip cache directory
-        id: pip-cache
-        shell: bash
-        run: |
-          echo "dir=$(pip cache dir)" >> $GITHUB_OUTPUT
-
+      # Step 3: Add caching for dependencies to speed up subsequent builds
       - name: Cache pip dependencies
         uses: actions/cache@v4
         with:
-          path: ${{ steps.pip-cache.outputs.dir }}
+          path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
           restore-keys: |
             ${{ runner.os }}-pip-
