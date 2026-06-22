@@ -11,9 +11,10 @@ if platform.system() == "Darwin":
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout,
-    QTabWidget, QLabel, QHBoxLayout
+    QTabWidget, QLabel, QHBoxLayout, QFrame, QProgressBar, QDesktopWidget,
+    QGraphicsDropShadowEffect
 )
-from PyQt5.QtGui import QIcon, QPixmap, QFont
+from PyQt5.QtGui import QIcon, QPixmap, QFont, QColor
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 
 # Import Refactored Components
@@ -71,10 +72,129 @@ def load_shared_dpt_model():
 
 class DPTModelLoaderThread(QThread):
     model_loaded = pyqtSignal(object, object, str)
+    status_changed = pyqtSignal(str)
 
     def run(self):
+        self.status_changed.emit("Initializing environment...")
+        self.msleep(150)  # Soft delay for smooth visual transition
+        self.status_changed.emit("Loading DPT AI weights (470 MB)...")
         processor, model, device = load_shared_dpt_model()
+        if model is not None:
+            self.status_changed.emit("AI model ready!")
+        else:
+            self.status_changed.emit("Failed to load AI model.")
+        self.msleep(300)  # Let the user see the success status briefly
         self.model_loaded.emit(processor, model, device)
+
+
+class WildlifeDistanceSplashScreen(QWidget):
+    """
+    A beautiful, modern, frameless splash screen shown during application startup.
+    Features the app logo, bold title, dynamic loading status, and a sleek red progress bar.
+    """
+    def __init__(self):
+        super().__init__()
+        # Frameless, stays on top, splash window flags
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.SplashScreen)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        
+        self.init_ui()
+        self.center_on_screen()
+
+    def init_ui(self):
+        # Main background container frame
+        self.container = QFrame(self)
+        self.container.setObjectName("SplashContainer")
+        # Apply modern minimal/card look with rounded borders
+        self.container.setStyleSheet("""
+            QFrame#SplashContainer {
+                background-color: #ffffff;
+                border: 1px solid #e0e0e0;
+                border-radius: 12px;
+            }
+        """)
+        
+        # Shadow effect
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(24)
+        shadow.setColor(QColor(0, 0, 0, 40))
+        shadow.setOffset(0, 6)
+        self.container.setGraphicsEffect(shadow)
+
+        # Layout inside container
+        layout = QVBoxLayout(self.container)
+        layout.setContentsMargins(40, 45, 40, 45)
+        layout.setSpacing(20)
+        layout.setAlignment(Qt.AlignCenter)
+
+        # Logo
+        self.logo_label = QLabel()
+        logo_path = resource_path('icon.png')
+        if os.path.exists(logo_path):
+            pixmap = QPixmap(logo_path).scaled(110, 110, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.logo_label.setPixmap(pixmap)
+        layout.addWidget(self.logo_label, 0, Qt.AlignCenter)
+
+        # Title
+        self.title_label = QLabel("Wildlife Distance")
+        self.title_label.setFont(QFont("Inter", 22, QFont.Bold))
+        self.title_label.setStyleSheet("color: #c82828; margin-top: 5px;")
+        layout.addWidget(self.title_label, 0, Qt.AlignCenter)
+
+        # Subtitle / Version
+        self.version_label = QLabel("Demo Version")
+        self.version_label.setFont(QFont("Inter", 10, QFont.Medium))
+        self.version_label.setStyleSheet("""
+            color: #888888;
+            font-weight: 500;
+            background-color: #f0f0f0;
+            border: 1px solid #e0e0e0;
+            border-radius: 10px;
+            padding: 2px 10px;
+        """)
+        layout.addWidget(self.version_label, 0, Qt.AlignCenter)
+
+        layout.addSpacing(10)
+
+        # Loading message
+        self.status_label = QLabel("Loading AI models...")
+        self.status_label.setFont(QFont("Inter", 11))
+        self.status_label.setStyleSheet("color: #555555;")
+        layout.addWidget(self.status_label, 0, Qt.AlignCenter)
+
+        # Custom red progress bar (sleek thin line)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setFixedHeight(4)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setRange(0, 0)  # Indeterminate/busy state
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                background-color: #f0f0f0;
+                border: none;
+                border-radius: 2px;
+            }
+            QProgressBar::chunk {
+                background-color: #c82828;
+                border-radius: 2px;
+            }
+        """)
+        layout.addWidget(self.progress_bar)
+
+        # Set size and outer layout
+        self.setFixedSize(450, 390)
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(15, 15, 15, 15)
+        outer_layout.addWidget(self.container)
+
+    def set_status_text(self, text: str):
+        self.status_label.setText(text)
+        QApplication.processEvents()  # Ensure UI updates immediately
+
+    def center_on_screen(self):
+        qr = self.frameGeometry()
+        cp = QDesktopWidget().availableGeometry().center()
+        qr.moveCenter(cp)
+        self.move(qr.topLeft())
 
 
 def resource_path(relative_path):
@@ -107,7 +227,7 @@ class WildlifeDistanceApp(QMainWindow):
             self.setWindowIcon(QIcon(icon_path))
 
         self.init_ui()
-        self.start_model_loader()
+        self.prepare_model_loader()
 
     def init_ui(self):
         # Central Widget & Main Layout
@@ -192,10 +312,9 @@ class WildlifeDistanceApp(QMainWindow):
 
         # Note: Each tool has its own local status bar.
 
-    def start_model_loader(self):
+    def prepare_model_loader(self):
         self.loader_thread = DPTModelLoaderThread()
         self.loader_thread.model_loaded.connect(self.on_model_loaded)
-        self.loader_thread.start()
 
     def on_model_loaded(self, processor, model, device):
         self._dpt_processor = processor
@@ -233,7 +352,27 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     apply_theme(app)
 
+    # 1. Create and show Splash Screen
+    splash = WildlifeDistanceSplashScreen()
+    splash.show()
+    app.processEvents()
+
+    # 2. Instantiate main app (initially hidden)
     window = WildlifeDistanceApp()
-    window.show()
+
+    # 3. Connect thread status signals to splash screen
+    window.loader_thread.status_changed.connect(splash.set_status_text)
+
+    # 4. Connect finish signal to close splash and show main window
+    def launch_main_app(processor, model, device):
+        splash.close()
+        window.show()
+        window.raise_()
+        window.activateWindow()
+
+    window.loader_thread.model_loaded.connect(launch_main_app)
+
+    # 5. Start the background model loader thread
+    window.loader_thread.start()
 
     sys.exit(app.exec_())
