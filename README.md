@@ -41,7 +41,7 @@ graph TD
 ### 1️⃣ Annotate Tab (Preparing AI Training Data)
 
 <p align="center">
-  <img src="annotation-GUI.png" width="700" alt="Annotate Tab Interface">
+  <img src="image/annotation-GUI.png" width="700" alt="Annotate Tab Interface">
 </p>
 
 This step is crucial for establishing reference points. You are matching the visual size and depth representation of animals in a specific camera trap view with their actual physical distance in meters.
