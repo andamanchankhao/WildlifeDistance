@@ -10,122 +10,120 @@
 
 ---
 
-## 📖 คู่มือการใช้งานแอปพลิเคชัน (Step-by-Step User Guide)
+## 📖 Step-by-Step User Guide
 
-แอปพลิเคชันแบ่งกระบวนการทำงานออกเป็น **3 แท็บ (3 ขั้นตอนหลัก)** เพื่อนำคุณตั้งแต่การเตรียมภาพตัวอย่าง การสอน AI ไปจนถึงการคำนวณผลลัพธ์แบบอัตโนมัติ:
+The application is structured into **three primary tabs (steps)** that walk you through preparing training datasets, calibrating your AI model, and executing automated distance predictions:
 
 ```mermaid
 graph TD
-    subgraph "ขั้นตอนที่ 1: เตรียมข้อมูลสอน AI (Annotate)"
-        A[โหลดโฟลเดอร์ภาพอ้างอิง] --> B[วาดกรอบสัตว์ป่า Polygon]
-        B --> C[ป้อนระยะทางจริงจากกล้อง]
-        C --> D[บันทึกไฟล์จุดพิกัด JSON]
+    subgraph "Step 1: Dataset Annotation (Annotate)"
+        A[Load Reference Directory] --> B[Draw Polygon Outlines]
+        B --> C[Input Ground-Truth Distance]
+        C --> D[Save Coordinate JSON Files]
     end
 
-    subgraph "ขั้นตอนที่ 2: สอนโมเดลหาระยะ (Train Model)"
-        E[โหลดภาพและจุดพิกัด] --> F[แยกคุณลักษณะความลึก DPT]
-        F --> G[เทรนโมเดล Regression]
-        G --> H[เซฟไฟล์โมเดลสำเร็จรูป .keras และ .joblib]
+    subgraph "Step 2: Model Training (Train Model)"
+        E[Load Image & Annotation Folder] --> F[Extract DPT Depth Features]
+        F --> G[Train Neural Network Regression]
+        G --> H[Export Calibrated .keras & .joblib Models]
     end
 
-    subgraph "ขั้นตอนที่ 3: คำนวณระยะทางอัตโนมัติ (Calculate)"
-        I[โหลดโฟลเดอร์ภาพใหม่] --> J[อ่านค่าโมเดล .keras / .joblib อัตโนมัติ]
-        J --> K[ตรวจจับสัตว์ด้วย YOLOv5]
-        K --> L[ประเมินความลึก DPT]
-        L --> M[คำนวณผลลัพธ์และส่งออก CSV]
+    subgraph "Step 3: Distance Calculation (Calculate)"
+        I[Load New Target Images] --> J[Auto-Read Model .keras / .joblib]
+        J --> K[Detect Wildlife via YOLOv5]
+        K --> L[Generate DPT Depth Maps]
+        L --> M[Predict Distance & Export CSV]
     end
 ```
 
 ---
 
-### 1️⃣ แท็บ Annotate (การเตรียมข้อมูลและจุดอ้างอิงระยะทาง)
-ขั้นตอนนี้เป็นการสร้างข้อมูลสอน (Training Data) เพื่อบอก AI ว่าสัดส่วนและความลึกของวัตถุแต่ละแบบในรูปภาพ มีค่าเท่ากับกี่เมตรในความเป็นจริง
+### 1️⃣ Annotate Tab (Preparing AI Training Data)
+This step is crucial for establishing reference points. You are matching the visual size and depth representation of animals in a specific camera trap view with their actual physical distance in meters.
 
-1.  **โหลดรูปภาพตัวอย่าง**:
-    *   กดปุ่ม **Step 1: Load Directory** ในการ์ดด้านบน หรือลากโฟลเดอร์รูปภาพจากคอมพิวเตอร์ของคุณมาวาง (Drag & Drop) ในพื้นที่ว่างตรงกลาง เพื่อทำการเปิดรูปภาพทั้งหมดในกล้องตัวนั้น ๆ
-2.  **กำหนดที่เก็บไฟล์จุดเชื่อมโยง (Output Directory)**:
-    *   กดปุ่ม **Step 2: Set Save Directory** เพื่อเลือกโฟลเดอร์สำหรับจัดเก็บพิกัดของสัตว์ป่าที่เรากำลังจะวาด (ระบบจะบันทึกเป็นไฟล์ `.json`)
-3.  **เริ่มวาดเส้นตีกรอบ (Polygon Drawing)**:
-    *   **คลิกซ้าย** ที่ตัวสัตว์ป่าบนรูปเพื่อเริ่มจุดพิกัดแรก จากนั้นคลิกตามแนวขอบตัวของสัตว์ไปเรื่อย ๆ จนครบรอบตัว
-    *   เมื่อวาดครบรอบตัวสัตว์แล้ว ให้ทำการ **ดับเบิ้ลคลิก (Double-click)** เพื่อปิดรูปทรง Polygon
-4.  **กรอกระยะทางจริง**:
-    *   หน้าต่างจะแสดงขึ้นมาถามระยะทางจริง (เป็นเมตร) ที่คุณได้ทำการรังวัดหรือทราบค่าจริงจากตำแหน่งนั้น ๆ ให้กรอกตัวเลขแล้วกด **OK**
-5.  **บันทึกผลงาน**:
-    *   ปุ่ม **Save Annotations** (หรือขยับเปลี่ยนไปรูปถัดไปในรายการขวา) จะทำการบันทึกข้อมูลพิกัดทั้งหมดลงโฟลเดอร์ Save Directory ที่คุณตั้งค่าไว้
-
----
-
-### 2️⃣ แท็บ Train Model (การสร้างโมเดลความลึกเฉพาะตัว)
-หลังจากเตรียมพิกัดสัตว์ป่าและระยะทางจริงแล้ว ขั้นตอนนี้จะเป็นการนำระยะทางเหล่านั้นมาสอนโมเดลคำนวณความลึกเชิงเดี่ยว (DPT Depth Map) เพื่อสร้างสมการแปลงพิกัดในกล้องนั้น ๆ
-
-1.  **โหลดโฟลเดอร์รูปและพิกัดสอน**:
-    *   กดปุ่ม **Step 1: Set Image Directory** เลือกโฟลเดอร์รูปภาพสัตว์ป่าที่เราวาดไว้
-    *   กดปุ่ม **Step 2: Set Model Output** เลือกโฟลเดอร์เป้าหมายสำหรับส่งออกไฟล์โมเดลระยะทางที่ได้หลังเทรนสำเร็จ
-2.  **เริ่มเทรน AI**:
-    *   กดปุ่ม **Start Model Training** ในการ์ด **Step 3**
-    *   **การทำงานเบื้องหลัง**: ระบบจะดึงภาพความลึก (DPT Depth Map) เฉพาะบริเวณที่เราตีกรอบไว้มาแปลงค่า และเริ่มฝึกสอนโมเดลเรียนรู้เชิงลึก (Deep Learning Regression) ของ TensorFlow
-    *   คุณสามารถดูขั้นตอนการทำงานและรายละเอียดต่าง ๆ ได้ที่แผงคอนโซลจำลองด้านขวา
-3.  **ตรวจดูผลการประเมิน**:
-    *   เมื่อเทรนเสร็จสิ้น ระบบจะสร้างกราฟวิเคราะห์ความแม่นยำ (Regression Curve & Error Plots) ขยายขนาดตามหน้าต่างแอปโดยอัตโนมัติ เพื่อยืนยันว่าสูตรคำนวณสอดคล้องกับพิกัดจริงหรือไม่
-    *   โมเดลที่เสร็จสมบูรณ์จะถูกเซฟในชื่อ `{ชื่อกล้อง}_distance_model.joblib` ไปยังโฟลเดอร์ส่งออกที่ตั้งไว้
+1.  **Load Reference Images**:
+    *   Click **Step 1: Load Directory** in the top action card, or simply **drag and drop** an image folder from your file manager directly onto the central canvas to load the files.
+2.  **Define Output Folder**:
+    *   Click **Step 2: Set Save Directory** to select the target folder where your drawn annotations will be stored as `.json` files.
+3.  **Draw Animal Outlines (Polygons)**:
+    *   **Left-click** points along the outline of the animal in the image.
+    *   Once you've wrapped around the animal's boundary, **double-click** to close the polygon shape.
+4.  **Enter Actual Distance**:
+    *   A prompt will appear asking for the ground-truth distance. Enter the actual measured distance in meters (e.g., `12.5`) and click **OK**.
+5.  **Save Progress**:
+    *   Click **Save Annotations** (or navigate to the next image in the thumbnail list on the left) to commit the coordinates to disk.
 
 ---
 
-### 3️⃣ แท็บ Distance Calculator (คำนวณระยะทางภาพถ่ายตัวใหม่แบบออโต้)
-ขั้นตอนนี้ใช้สำหรับการตรวจประเมินรูปภาพชุดใหม่ที่กล้องดักถ่ายถ่ายได้ เพื่อหาระยะทางของสัตว์โดยที่เราไม่ต้องตีกรอบหรือกรอกระยะทางใด ๆ อีกต่อไป
+### 2️⃣ Train Model Tab (Calibrating the AI Model)
+Once annotations are saved, this tab processes the cropped animal outlines, maps them to the DPT depth coordinates, and trains a regression model to estimate distances for this specific camera viewpoint.
 
-1.  **เตรียมไฟล์ในโฟลเดอร์เป้าหมาย**:
-    *   นำรูปภาพใหม่ ๆ ที่ต้องการหาระยะทางไปใส่ในโฟลเดอร์เดียวกัน
-    *   **สำคัญ**: นำไฟล์โมเดลระยะทางที่ได้จากการเทรนในแท็บที่ 2 (เช่น `distance_model.joblib`) มาวางไว้ในโฟลเดอร์นี้ด้วย เพื่อให้โปรแกรมค้นหาโมเดลไปใช้คำนวณอัตโนมัติ
-2.  **โหลดรูปเข้าโปรแกรม**:
-    *   กดโหลดโฟลเดอร์ภาพ หรือลากโฟลเดอร์ภาพใหม่มาวางตรงกลางแอป
-3.  **กดสั่งงานประมวลผลออโต้**:
-    *   กดปุ่ม **Auto-Calculate All**
-    *   **กระบวนการอัตโนมัติ**: AI ของ YOLOv5 จะทำการค้นหาว่าสัตว์ป่าอยู่จุดไหนของรูป จากนั้น AI ของ DPT จะประเมินแผนผังความลึกแบบ 3 มิติ และนำโมเดล Regression มาทำนายระยะห่าง (เมตร) ของสัตว์ตัวนั้นให้ทันทีภายในไม่กี่วินาที
-4.  **ดูพิกัดและตรวจสอบผลลัพธ์**:
-    *   รายการสัตว์ที่พบและระยะห่างที่คำนวณได้จะแสดงในตารางด้านขวา
-    *   **การเชื่อมโยงสองทาง**: คุณสามารถคลิกเลือกรายชื่อสัตว์ป่าในตารางด้านขวา เพื่อเลื่อนหน้าจอและกล่องเครื่องมือแสดงตำแหน่งสัตว์ในรูปภาพตรงกลางจอได้โดยตรง
-5.  **ส่งออกเป็นรายงาน**:
-    *   กดปุ่ม **Export CSV** เพื่อเซฟไฟล์พิกัด สัตว์ที่ตรวจพบ และระยะห่างที่คำนวณได้ออกไปเปิดใช้ใน Microsoft Excel ต่อได้ทันที
+1.  **Set Directories**:
+    *   Click **Step 1: Set Image Directory** to select your annotated image folder.
+    *   Click **Step 2: Set Model Output** to choose where the finished ML models will be saved.
+2.  **Start Training**:
+    *   Click **Start Model Training** in the **Step 3** card.
+    *   **Under the Hood**: The program extracts depth features from the DPT model (`Intel/dpt-hybrid-midas`), scales them, and trains a neural network. You can monitor the real-time logging output in the monospaced terminal window on the right.
+3.  **Evaluate Performance**:
+    *   Upon completion, the app generates interactive regression curves and error metric plots that scale dynamically with your window size.
+    *   The calibrated model will be exported as `{camera_id}_distance_model.joblib` in your output folder.
 
 ---
 
-## 📥 สำหรับผู้ใช้งานทั่วไป (General User Installation)
+### 3️⃣ Distance Calculator Tab (Executing Automated Predictions)
+Use this tab to estimate distances for newly collected, unannotated images from your camera trap.
 
-คุณไม่จำเป็นต้องติดตั้งโค้ดเขียนโปรแกรมใด ๆ เพื่อเริ่มใช้งาน!
-1.  ไปที่หน้าเมนู **Releases** ด้านขวาของหน้าโปรเจกต์นี้บน GitHub
-2.  ดาวน์โหลดไฟล์เวอร์ชันสำเร็จรูปล่าสุด (เช่น ไฟล์ติดตั้ง `.app` สำหรับ macOS หรือ `.exe` สำหรับ Windows ที่ลงท้ายด้วย `v0.7.x`)
-3.  เปิดโปรแกรมขึ้นมาใช้งานได้ทันที (ตัวติดตั้งได้ทำการมัดฟอนต์และเครื่องมือแปลภาษา AI ทุกอย่างไว้พร้อมในตัวเรียบร้อยแล้ว)
+1.  **Arrange Directory Files**:
+    *   Ensure your new images and your calibrated model file (e.g., `distance_model.joblib`) are located in the **same folder** so that the application can automatically discover and load the model.
+2.  **Load Target Images**:
+    *   Open the directory or drag the folder directly onto the drag-and-drop placeholder zone.
+3.  **Run Processors**:
+    *   Click **Auto-Calculate All**.
+    *   **Under the Hood**: YOLOv5 detects the animals, DPT generates pixel-level depth maps, and your trained model estimates the distance in meters—all in a matter of seconds.
+4.  **Review Detections & Sync**:
+    *   Detections are plotted on the central image canvas, and coordinates are listed in the table on the right.
+    *   **Bidirectional Synchronization**: Click any row in the results table to automatically switch to that image and highlight the corresponding animal bounding box.
+5.  **Export CSV**:
+    *   Click **Export CSV** to save all calculated animal categories, bounding coordinates, and estimated distances into a spreadsheet-compatible file.
 
 ---
 
-## 💻 สำหรับนักพัฒนาและวิศวกร (Developers & Setup from Source)
+## 📥 General User Installation (No Code Required)
 
-หากต้องการรันแอปพลิเคชันจากซอร์สโค้ด หรือทำการตรวจสอบ แก้ไขฟังก์ชันภายใน:
+You do not need python or code dependencies to run this application:
+1.  Navigate to the **Releases** section on the right side of this GitHub repository page.
+2.  Download the latest compiled package matching your operating system (e.g., the `.app` package for macOS or `.exe` for Windows ending with version `v0.7.x`).
+3.  Launch the application directly. Fonts, libraries, and AI model managers are fully bundled in the standalone package.
 
-### 1. ติดตั้งสภาพแวดล้อมจำลอง (Environment Setup)
+---
+
+## 💻 Developers & Setup from Source (Advanced Users)
+
+To run the application from source code or build it locally:
+
+### 1. Set Up Virtual Environment
 ```bash
-# โคลนโปรเจกต์
+# Clone the repository
 git clone <repository-url>
 cd WildlifeDistance
 
-# สร้างและเปิด virtual environment
+# Create and activate environment
 python3 -m venv venv
-source venv/bin/activate  # สำหรับ Windows ใช้ venv\Scripts\activate
+source venv/bin/activate  # On Windows, run: venv\Scripts\activate
 
-# ติดตั้งแพ็กเกจที่จำเป็น
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-### 2. เปิดใช้งานผ่านซอร์สโค้ด
+### 2. Launch Application
 ```bash
 python3 main_app.py
 ```
-*แอปพลิเคชันจะจำลองหน้าต่าง Splash Screen เพื่อดึงและประมวลผลโมเดล AI ผ่านเบื้องหลังของหน่วยประมวลผลเครื่องโดยอัตโนมัติ*
+*The app initializes a frameless splash screen on startup to load the heavy AI model asynchronously, keeping the main interface fast and responsive.*
 
-### 3. บิลด์ตัวรันสำเร็จรูปด้วย PyInstaller (Local Build)
+### 3. Build Standalone Package Locally
 ```bash
 pip install pyinstaller
 pyinstaller WildlifeDistance.spec
 ```
-*การกำหนดค่าใน Spec จะดึงฟอนต์ Inter และโลโก้ Tiger ของโครงการเข้าไปประกอบสร้างในโฟลเดอร์ `dist/` สำเร็จรูปแบบออฟไลน์*
+*The spec configuration dynamically packages the custom Inter fonts and native app icons into the compiled executable.*
