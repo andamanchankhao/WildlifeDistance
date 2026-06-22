@@ -16,47 +16,16 @@ from PyQt5.QtWidgets import (
     QLabel, QPushButton, QGraphicsView, QGraphicsScene, QInputDialog,
     QFileDialog, QMessageBox, QDialog, QSizePolicy, QListWidget,
     QListWidgetItem, QTableWidget, QTableWidgetItem, QHeaderView,
-    QSplitter
+    QSplitter, QFrame, QStackedWidget
 )
 from PyQt5.QtGui import QPixmap, QImage, QPainter, QColor, QPen, QFont, QPolygonF, QBrush
 from PyQt5.QtCore import Qt, QPointF, QRectF, QThread, pyqtSignal, QSize
 
+from styles import UploadPlaceholder
+
 # --- Dependency Imports with Graceful Fallbacks ---
 
-# TensorFlow and Keras for model training
-try:
-    import tensorflow as tf
-    from tensorflow.keras.models import Model # type: ignore
-    from tensorflow.keras.layers import Input, Dense, Dropout # type: ignore
-    from tensorflow.keras.callbacks import Callback # type: ignore
-    from tensorflow.keras.metrics import MeanAbsoluteError # type: ignore
-except ImportError:
-    tf = None
-    print("Warning: TensorFlow not installed. Training functionality will be disabled. Install with 'pip install tensorflow'.")
-
-# Scikit-learn for metrics, data splitting, and scaling
-try:
-    from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-    from sklearn.model_selection import train_test_split
-    from sklearn.preprocessing import StandardScaler
-except ImportError:
-    mean_squared_error = r2_score = train_test_split = StandardScaler = None
-    print("Warning: Scikit-learn not installed. Advanced metrics, data splitting, and scaling will be unavailable. Install with 'pip install scikit-learn'.")
-
-# Joblib for saving/loading the scaler
-try:
-    import joblib
-except ImportError:
-    joblib = None
-    print("Warning: Joblib not installed. The feature scaler will not be saved. Install with 'pip install joblib'.")
-
-# Matplotlib for plotting
-try:
-    import matplotlib.pyplot as plt
-    plt.switch_backend('Agg')  # Use non-interactive backend for PyQt
-except ImportError:
-    plt = None
-    print("Warning: Matplotlib not installed. Plot generation will be disabled. Install with 'pip install matplotlib'.")
+# Matplotlib removed (moved to training tool)
 
 # Hugging Face Transformers and PyTorch for DPT model
 try:
@@ -88,9 +57,11 @@ def convert_cv_to_qpixmap(cv_img: np.ndarray) -> QPixmap:
     q_img = QImage(cv_img.data, width, height, bytes_per_line, QImage.Format_RGB888).rgbSwapped()
     return QPixmap.fromImage(q_img)
 
+# generate_dpt_depth_map is still needed for "Show Depth" feature
 def generate_dpt_depth_map(cv_img: np.ndarray, processor, model, device: str) -> Optional[np.ndarray]:
     """Generates a depth map from an OpenCV image using a DPT model."""
-    if any(lib is None for lib in [cv_img, processor, model, torch]):
+    # Bug F fix: check numpy array and other deps separately to avoid ValueError
+    if cv_img is None or processor is None or model is None or torch is None:
         return None
     try:
         img_rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
@@ -137,298 +108,6 @@ class DPTWorker(QThread):
 
 # --- PyQt GUI Classes ---
 
-class PyQtCallback(Callback):
-    """Custom Keras Callback to update the PyQt GUI during training."""
-    def __init__(self, update_status_signal: pyqtSignal):
-        super().__init__()
-        self.update_status_signal = update_status_signal
-
-    def on_epoch_end(self, epoch, logs=None):
-        logs = logs or {}
-        status_msg = (
-            f"Epoch {epoch + 1}: "
-            f"Loss: {logs.get('loss', 0):.4f}, "
-            f"MAE: {logs.get('mean_absolute_error', 0):.4f}, "
-            f"Val Loss: {logs.get('val_loss', 0):.4f}, "
-            f"Val MAE: {logs.get('val_mean_absolute_error', 0):.4f}"
-        )
-        self.update_status_signal.emit(status_msg)
-
-class PlotWindow(QDialog):
-    """A dialog window to display the matplotlib plot."""
-    def __init__(self, plot_path: str, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Actual vs. Predicted Distance Plot")
-        self.setGeometry(200, 200, 800, 600)
-        self.plot_path = plot_path
-
-        layout = QVBoxLayout(self)
-        self.plot_label = QLabel("Loading Plot...")
-        self.plot_label.setAlignment(Qt.AlignCenter)
-        self.plot_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
-        layout.addWidget(self.plot_label)
-        self.original_pixmap = QPixmap(self.plot_path)
-
-    def showEvent(self, event):
-        """Load plot when the widget is shown to ensure correct initial size."""
-        super().showEvent(event)
-        self.update_plot_display()
-
-    def resizeEvent(self, event):
-        """Re-scale the pixmap when the window is resized."""
-        super().resizeEvent(event)
-        self.update_plot_display()
-
-    def update_plot_display(self):
-        """Loads and scales the plot image to fit the label."""
-        if not self.original_pixmap.isNull():
-            scaled_pixmap = self.original_pixmap.scaled(
-                self.plot_label.size(),
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation
-            )
-            self.plot_label.setPixmap(scaled_pixmap)
-        else:
-            self.plot_label.setText(f"Error: Could not load plot from {self.plot_path}")
-
-class ThumbnailItemWidget(QWidget):
-    """Custom widget for displaying an image thumbnail in the QListWidget."""
-    def __init__(self, pixmap: QPixmap, image_path: str, parent=None):
-        super().__init__(parent)
-        self.image_path = image_path
-        self.is_annotated = False
-        self.setFixedSize(QSize(100, 100))
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(5, 5, 5, 5)
-        thumbnail_label = QLabel()
-        thumbnail_label.setAlignment(Qt.AlignCenter)
-        thumbnail_label.setPixmap(pixmap.scaled(
-            THUMBNAIL_SIZE, Qt.KeepAspectRatio, Qt.SmoothTransformation
-        ))
-        layout.addWidget(thumbnail_label)
-        self.setAutoFillBackground(True)
-        self.set_selected(False) # Set initial background
-
-    def set_annotated_status(self, annotated: bool):
-        self.is_annotated = annotated
-
-    def set_selected(self, selected: bool):
-        """Updates the selection status and background color."""
-        palette = self.palette()
-        color = QColor("lightblue") if selected else QColor("transparent")
-        palette.setColor(self.backgroundRole(), color)
-        self.setPalette(palette)
-
-
-class TrainingThread(QThread):
-    """Worker thread for training the model to prevent UI freezing."""
-    update_status = pyqtSignal(str)
-    training_finished = pyqtSignal()
-    final_metrics_report = pyqtSignal(str)
-    plot_generated = pyqtSignal(str)
-    depth_plot_generated = pyqtSignal(str) # Fixed: Added missing signal
-    training_results_available = pyqtSignal(object)
-
-    def __init__(self, image_files: List[str], annotations: Dict[str, List], dpt_processor, dpt_model, device: str, save_dir: str):
-        super().__init__()
-        self.image_files = image_files
-        self.annotations = annotations
-        self.processor = dpt_processor
-        self.dpt_model = dpt_model
-        self.device = device
-        self.save_dir = save_dir
-        self.is_running = True
-
-    def get_depth_for_polygon(self, depth_map: np.ndarray, polygon_coords: List[List[int]]) -> Optional[float]:
-        """Extracts a representative depth value (median) from a polygon area."""
-        if not polygon_coords or len(polygon_coords) < 3:
-            return None
-
-        # Create a mask for the polygon
-        h, w = depth_map.shape
-        mask = np.zeros((h, w), dtype=np.uint8)
-        pts = np.array(polygon_coords, dtype=np.int32)
-        cv2.fillPoly(mask, [pts], 1)
-
-        # Extract depth values where mask is 1
-        valid_depths = depth_map[mask == 1]
-        valid_depths = valid_depths[np.isfinite(valid_depths)]
-
-        return np.median(valid_depths) if valid_depths.size > 0 else None
-
-    def run(self):
-        """The main training logic executed in the worker thread."""
-        if any(lib is None for lib in [mean_absolute_error, r2_score, joblib]):
-            self.update_status.emit("Error: Scikit-learn or Joblib not installed. Training aborted.")
-            self.training_finished.emit()
-            return
-
-        try:
-            self.update_status.emit("Preparing data for training...")
-            X_features, y_labels = [], []
-            image_paths_for_features = [] # Track image paths for results
-            depth_map_cache = {}
-
-            all_annotations = [ann for anns in self.annotations.values() for ann in anns]
-            if not all_annotations:
-                self.update_status.emit("No annotations found. Please annotate images first.")
-                self.training_finished.emit()
-                return
-
-            for ann in all_annotations:
-                img_path = ann["image_path"]
-                if img_path in depth_map_cache:
-                    depth_map = depth_map_cache[img_path]
-                else:
-                    img_full = cv2.imread(img_path)
-                    if img_full is None: continue
-                    h, _, _ = img_full.shape
-                    img_cropped = img_full[0:int(h * IMAGE_CROP_FACTOR), :]
-                    depth_map = generate_dpt_depth_map(img_cropped, self.processor, self.dpt_model, self.device)
-                    depth_map_cache[img_path] = depth_map
-
-                if depth_map is None: continue
-
-                # Handle both old (bbox) and new (polygon) formats
-                coords = ann["coordinates"]
-                bbox_depth = None
-                
-                if isinstance(coords[0], list): # Polygon: [[x,y], [x,y], ...]
-                     bbox_depth = self.get_depth_for_polygon(depth_map, coords)
-                else: # Legacy BBox: [x1, y1, x2, y2]
-                     x1, y1, x2, y2 = coords
-                     poly_pts = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
-                     bbox_depth = self.get_depth_for_polygon(depth_map, poly_pts)
-
-                if bbox_depth is not None:
-                    # DPT output is often inversely proportional to distance (disparity).
-                    # We use 1/depth as the primary feature for Linear Regression.
-                    inverse_depth = 1.0 / (bbox_depth + 1e-6)
-                    # We can also include raw depth to capture any non-linear bias, 
-                    # but for robust calibration with few points, simple 1/depth is often best.
-                    # Let's use [inverse_depth] as the feature.
-                    X_features.append([inverse_depth]) 
-                    y_labels.append(ann["distance_meters"])
-                    image_paths_for_features.append(img_path)
-
-            if not X_features:
-                self.update_status.emit("No valid features could be extracted. Training aborted.")
-                self.training_finished.emit()
-                return
-
-            X = np.array(X_features, dtype=np.float32)
-            y = np.array(y_labels, dtype=np.float32)
-            
-            # Keep raw depth for plotting/table (re-calculate from inverse)
-            # X_features was [1/d], so d = 1/X
-            X_raw_depth = 1.0 / (X[:, 0] + 1e-6)
-
-            self.update_status.emit(f"Extracted {len(X)} features. Training Linear Regression model...")
-
-            # Train Linear Regression Model
-            # We use RANSACRegressor for robustness against outliers, or simple LinearRegression
-            from sklearn.linear_model import LinearRegression, RANSACRegressor
-            
-            # Use LinearRegression if points are few, RANSAC if many? 
-            # With very few points, RANSAC might fail if min_samples is high.
-            # Let's use simple LinearRegression for stability on small data.
-            model = LinearRegression()
-            model.fit(X, y)
-            
-            y_pred = model.predict(X)
-
-            # Evaluation Metrics
-            mae = mean_absolute_error(y, y_pred)
-            rmse = np.sqrt(mean_squared_error(y, y_pred))
-            r2 = r2_score(y, y_pred)
-
-            metrics_text = f"MAE: {mae:.2f}m | RMSE: {rmse:.2f}m | R²: {r2:.2f}"
-            self.final_metrics_report.emit(metrics_text)
-            self.update_status.emit("Training complete. Generating plots...")
-
-            # Generate Plot
-            if plt:
-                # Plot 1: Actual vs. Predicted Distance
-                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
-                    plot_path = temp_file.name
-                
-                plt.figure(figsize=(8, 6))
-                plt.scatter(y, y_pred, alpha=0.7, label="Predictions")
-                
-                # Perfect prediction line
-                min_val = min(y.min(), y_pred.min())
-                max_val = max(y.max(), y_pred.max())
-                plt.plot([min_val, max_val], [min_val, max_val], 'r--', label="Perfect Prediction")
-                
-                plt.title(f"Actual vs. Predicted Distance")
-                plt.xlabel("Actual Distance (meters)")
-                plt.ylabel("Predicted Distance (meters)")
-                plt.grid(True)
-                plt.legend()
-                plt.tight_layout()
-                plt.savefig(plot_path)
-                plt.close()
-                self.plot_generated.emit(plot_path)
-
-                # Plot 2: Calibration: DPT Depth vs. Distance
-                with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
-                    depth_plot_path = temp_file.name
-
-                plt.figure(figsize=(8, 6))
-                # Plot Raw Depth vs Actual Distance
-                plt.scatter(X_raw_depth, y, alpha=0.7, label="Actual Data", color='blue')
-                plt.scatter(X_raw_depth, y_pred, alpha=0.7, label="Model Prediction", color='red', marker='x')
-                
-                # Sort for smooth line plot of the model
-                sort_idx = np.argsort(X_raw_depth)
-                plt.plot(X_raw_depth[sort_idx], y_pred[sort_idx], color='red', alpha=0.5, linestyle='--', label="Fit Curve")
-
-                plt.title(f"Calibration: DPT Depth vs. Distance")
-                plt.xlabel("DPT Depth Value")
-                plt.ylabel("Distance (meters)")
-                plt.grid(True)
-                plt.legend()
-                plt.tight_layout()
-                plt.savefig(depth_plot_path)
-                plt.close()
-                self.depth_plot_generated.emit(depth_plot_path)
-            else:
-                plot_path = None
-                depth_plot_path = None
-
-
-            # Emit detailed results
-            results = {
-                'y_true': y,
-                'y_pred': y_pred,
-                'X_raw': X_raw_depth, # Save raw depth
-                'image_paths': image_paths_for_features,
-                'metrics': {'mae': mae, 'rmse': rmse, 'r2': r2},
-                'plot_path': plot_path,
-                'depth_plot_path': depth_plot_path
-            }
-            self.training_results_available.emit(results)
-
-            # Save Model (Joblib)
-            model_path = os.path.join(self.save_dir, MODEL_FILENAME_TEMPLATE.replace('.keras', '.joblib'))
-            print(f"Attempting to save model to: {model_path}")
-            joblib.dump(model, model_path)
-            
-            # We don't need a separate scaler for LinearRegression on 1 feature, 
-            # but if we want to keep compatibility or future proofing, we can keep it.
-            # For now, let's just save the model.
-            
-            self.update_status.emit(f"Model saved to {model_path}")
-            self.training_finished.emit()
-
-        except Exception as e:
-            print(f"TRAINING ERROR: {e}")
-            import traceback
-            traceback.print_exc()
-            self.update_status.emit(f"Error: {str(e)}")
-            self.training_finished.emit()
-
 
 class CustomGraphicsView(QGraphicsView):
     """Subclassed QGraphicsView to emit signals for mouse events."""
@@ -438,7 +117,6 @@ class CustomGraphicsView(QGraphicsView):
     mouse_double_clicked = pyqtSignal(object)
 
     def mousePressEvent(self, event):
-        print(f"DEBUG: Mouse Press - Button: {event.button()}")
         self.mouse_pressed.emit(event)
         super().mousePressEvent(event)
 
@@ -451,7 +129,6 @@ class CustomGraphicsView(QGraphicsView):
         super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event):
-        print("DEBUG: Mouse Double Click")
         self.mouse_double_clicked.emit(event)
         super().mouseDoubleClickEvent(event)
 
@@ -460,65 +137,66 @@ class CustomGraphicsView(QGraphicsView):
             self.fitInView(self.scene().itemsBoundingRect(), Qt.KeepAspectRatio)
         super().resizeEvent(event)
 
-MODEL_FILENAME_TEMPLATE = "distance_model.keras"
-SCALER_FILENAME_TEMPLATE = "scaler.joblib"
-THUMBNAIL_SIZE = QSize(90, 90)
-ANNOTATION_PEN = QPen(QColor("red"), 2)
-ANNOTATION_FONT = QFont("Arial", 32, QFont.Bold) # Increased font size
-TEMP_RECT_PEN = QPen(QColor("red"), 2, Qt.DashLine)
-TEMP_LINE_PEN = QPen(QColor("red"), 1, Qt.DashLine)
-
-# --- Helper Functions ---
-def convert_cv_to_qpixmap(cv_img: np.ndarray) -> QPixmap:
-    """Converts an OpenCV image (BGR) to a QPixmap."""
-    if cv_img is None:
-        return QPixmap()
-    height, width, channel = cv_img.shape
-    bytes_per_line = 3 * width
-    q_img = QImage(cv_img.data, width, height, bytes_per_line, QImage.Format_RGB888).rgbSwapped()
-    return QPixmap.fromImage(q_img)
-
-def generate_dpt_depth_map(cv_img: np.ndarray, processor, model, device: str) -> Optional[np.ndarray]:
-    """Generates a depth map from an OpenCV image using a DPT model."""
-    if any(lib is None for lib in [cv_img, processor, model, torch]):
-        return None
-    try:
-        img_rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
-        inputs = processor(images=img_rgb, return_tensors="pt")
-        inputs = {k: v.to(device) for k, v in inputs.items()}
-
-        with torch.no_grad():
-            outputs = model(**inputs)
-            predicted_depth = outputs.predicted_depth
-
-        prediction = torch.nn.functional.interpolate(
-            predicted_depth.unsqueeze(1),
-            size=cv_img.shape[:2],
-            mode="bicubic",
-            align_corners=False,
-        )
-        return prediction.squeeze().cpu().numpy()
-    except Exception as e:
-        print(f"DPT Generation Error: {e}")
-        return None
-
 class ResponsiveListWidget(QListWidget):
-    """A QListWidget that automatically resizes its icons to fit the width."""
+    """A QListWidget that automatically resizes its items to fit the width with the correct aspect ratio."""
     def resizeEvent(self, event):
         width = event.size().width()
-        # Calculate new icon size (subtracting scrollbar width and margins)
-        # Assuming a single column layout
-        new_size = width - 25 
-        if new_size > 50: # Minimum size
-            self.setIconSize(QSize(new_size, int(new_size * 0.75))) # Maintain aspect ratio roughly
+        # Adjust for scrollbar and borders (approx 24px)
+        item_width = max(50, width - 24)
+        # 4:3 aspect ratio height plus 15px bottom spacing gap
+        item_height = int(item_width * 0.75) + 15
+        
+        for i in range(self.count()):
+            item = self.item(i)
+            item.setSizeHint(QSize(item_width, item_height))
+            
         super().resizeEvent(event)
 
-class AnnotationTool(QMainWindow):
-    """Main application window for the annotation tool."""
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Wildlife Distance Annotation Tool")
-        self.setGeometry(100, 100, 1400, 900)
+class ThumbnailItemWidget(QWidget):
+    """Custom widget for displaying an image thumbnail in the QListWidget."""
+    def __init__(self, pixmap: QPixmap, image_path: str, parent=None):
+        super().__init__(parent)
+        self.image_path = image_path
+        self.original_pixmap = pixmap
+        self.is_annotated = False
+
+        layout = QVBoxLayout(self)
+        # 5px margin on left/right/top, 15px margin on bottom for spacing
+        layout.setContentsMargins(5, 5, 5, 15)
+        
+        self.thumbnail_label = QLabel()
+        self.thumbnail_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.thumbnail_label)
+        
+        self.setAutoFillBackground(True)
+        self.set_selected(False) # Set initial background
+
+    def resizeEvent(self, event):
+        # Subtract the margins (left+right=10, top+bottom=20)
+        w = self.width() - 10
+        h = self.height() - 20
+        if w > 10 and h > 10:
+            scaled_pixmap = self.original_pixmap.scaled(
+                w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+            self.thumbnail_label.setPixmap(scaled_pixmap)
+        super().resizeEvent(event)
+
+    def set_annotated_status(self, annotated: bool):
+        self.is_annotated = annotated
+
+    def set_selected(self, selected: bool):
+        """Updates the selection status and background color."""
+        palette = self.palette()
+        color = QColor("lightblue") if selected else QColor("transparent")
+        palette.setColor(self.backgroundRole(), color)
+        self.setPalette(palette)
+
+
+class AnnotationTool(QWidget):
+    """Main application widget for the annotation tool."""
+    def __init__(self, parent=None, shared_dpt_processor=None, shared_dpt_model=None, shared_device=None):
+        super().__init__(parent)
 
         # State variables
         self.image_directory: Optional[str] = None
@@ -527,29 +205,40 @@ class AnnotationTool(QMainWindow):
         self.current_image_cv: Optional[np.ndarray] = None
         self.annotations_by_image: Dict[str, List] = {}
         self.is_dpt_view_active = False
-        
+        self.json_output_directory: Optional[str] = None
+
         # Drawing state
         self.drawing_polygon = False
         self.current_polygon_points = []
-        self.current_temp_items = [] # To store temporary lines/points
-        
+        self.current_temp_items = []
+
         # DPT Model components
-        self.dpt_processor = self.dpt_model = None
-        self.device = "cuda" if torch and torch.cuda.is_available() else "cpu"
+        # Opt-1: use a shared model if provided; otherwise load our own.
+        if shared_dpt_processor is not None and shared_dpt_model is not None:
+            self.dpt_processor = shared_dpt_processor
+            self.dpt_model = shared_dpt_model
+            self.device = shared_device or "cpu"
+        else:
+            self.dpt_processor = None
+            self.dpt_model = None
+            self.device = "cuda" if torch and torch.cuda.is_available() else "cpu"
 
-        # Child windows and threads
-        self.training_thread: Optional[TrainingThread] = None
-        self.plot_window: Optional[PlotWindow] = None
+        # Bug E fix: TrainingThread and PlotWindow were moved to training_DPT.py.
+        # Bug D fix: image_item_map was declared twice, keep only one.
         self.image_item_map: Dict[str, ThumbnailItemWidget] = {}
-
-        self.image_item_map: Dict[str, ThumbnailItemWidget] = {}
+        self.image_list_item_map: Dict[str, QListWidgetItem] = {}
 
         # DPT Worker
         self.dpt_worker = None
         self.progress_dialog = None
 
         self.init_ui()
-        self.load_dpt_inference_model()
+        # Only load DPT model internally if we did not receive a shared one.
+        if self.dpt_model is None:
+            self.load_dpt_inference_model()
+        else:
+            # Shared model is already loaded; just update the status label after UI init.
+            self.status_label.setText(f"DPT model ready (shared, device={self.device}).")
     
     def load_dpt_inference_model(self):
         """Loads the pre-trained DPT model from Hugging Face."""
@@ -564,45 +253,205 @@ class AnnotationTool(QMainWindow):
             self.status_label.setText(f"DPT model loaded successfully on {self.device}.")
         except Exception as e:
             self.status_label.setText(f"Failed to load DPT model: {e}")
-            print(f"DPT Model Load Error: {e}")
+    # ── Helper Methods ───────────────────────────────────────────────────
+    def create_step_card(self, step_num: str, title: str, button: QPushButton, info_label: QLabel) -> QFrame:
+        card = QFrame()
+        card.setStyleSheet("""
+            QFrame {
+                background-color: white;
+                border: 1px solid #e0e0e0;
+                border-radius: 8px;
+            }
+            QLabel { border: none; background-color: transparent; }
+        """)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(15, 12, 15, 12)
+        layout.setSpacing(8)
+
+        header_row = QHBoxLayout()
+        step_lbl = QLabel(step_num)
+        step_lbl.setStyleSheet("font-weight: bold; color: #c82828; font-size: 13px;")
+        title_lbl = QLabel(title)
+        title_lbl.setStyleSheet("font-weight: bold; color: #333333; font-size: 13px;")
+        header_row.addWidget(step_lbl)
+        header_row.addWidget(title_lbl)
+        header_row.addStretch()
+        layout.addLayout(header_row)
+
+        if button is not None:
+            layout.addWidget(button)
+
+        info_label.setStyleSheet("color: #666666; font-size: 12px;")
+        info_label.setWordWrap(True)
+        info_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        layout.addWidget(info_label)
+
+        return card
+
+    def clear_all(self):
+        """Reset all state and clear the UI back to its initial state."""
+        self.save_annotations_for_current_image()
+
+        self.image_directory = None
+        self.image_files = []
+        self.annotations_by_image.clear()
+        self.json_output_directory = None
+        self.current_image_path = None
+        self.current_image_cv = None
+        self.current_polygon_points = []
+        self.current_temp_items = []
+        self.drawing_polygon = False
+
+        # Reset list and map
+        self.thumbnail_list_widget.clear()
+        self.image_item_map.clear()
+        self.image_list_item_map.clear()
+
+        # Reset graphics view
+        self.graphics_scene.clear()
+        self.current_image_name_label.setText("No Image Loaded")
+
+        # Reset table
+        self.annotation_table.setRowCount(0)
+
+        # Reset labels
+        self.dir_label.setText("No directory selected")
+        self.output_dir_label.setText("Output: Default (Image Dir)")
+        self.show_dpt_btn.setChecked(False)
+        self.show_dpt_btn.setText("Show DPT Depth")
+
+        self.status_label.setText("Cleared. Choose an image directory to begin.")
+        self.center_stack.setCurrentIndex(0)
+        self.update_navigation_buttons_state()
+
+    def update_navigation_buttons_state(self):
+        if not self.image_files or self.current_image_path is None:
+            self.prev_btn.setEnabled(False)
+            self.next_btn.setEnabled(False)
+            return
+        try:
+            current_index = self.image_files.index(self.current_image_path)
+            self.prev_btn.setEnabled(current_index > 0)
+            self.next_btn.setEnabled(current_index < len(self.image_files) - 1)
+        except ValueError:
+            self.prev_btn.setEnabled(False)
+            self.next_btn.setEnabled(False)
 
     def init_ui(self):
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        main_layout = QHBoxLayout(central_widget)
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(15, 15, 15, 15)
+        main_layout.setSpacing(15)
 
-        # --- Left Panel (Directory and Thumbnails) ---
-        left_panel_widget = QWidget()
-        left_panel_widget.setObjectName("GlassPanel")
-        left_panel = QVBoxLayout(left_panel_widget)
-        
-        self.load_dir_btn = QPushButton("Load Directory")
+        # --- Title and Description + Clear Button ---
+        header_widget = QWidget()
+        header_outer = QHBoxLayout(header_widget)
+        header_outer.setContentsMargins(0, 0, 0, 5)
+        header_outer.setSpacing(0)
+
+        # Left: title + description
+        title_block = QWidget()
+        title_layout = QVBoxLayout(title_block)
+        title_layout.setContentsMargins(0, 0, 0, 0)
+        title_layout.setSpacing(4)
+        title_lbl = QLabel("Image Annotation Tool")
+        title_lbl.setStyleSheet("font-size: 18px; font-weight: bold; color: #1e1e1e;")
+        desc_lbl = QLabel("Draw polygon annotations and measure distances to calibrate the distance estimation model.")
+        desc_lbl.setStyleSheet("font-size: 13px; color: #666666;")
+        title_layout.addWidget(title_lbl)
+        title_layout.addWidget(desc_lbl)
+        header_outer.addWidget(title_block, 1)
+
+        # Right: Clear button
+        self.clear_btn = QPushButton("Clear All")
+        self.clear_btn.setFixedSize(90, 32)
+        self.clear_btn.clicked.connect(self.clear_all)
+        self.clear_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #e0e0e0;
+                color: #555555;
+                border: 1px solid #cccccc;
+                border-radius: 6px;
+                font-size: 13px;
+                font-weight: 500;
+            }
+            QPushButton:hover { background-color: #d0d0d0; color: #333333; border: 1px solid #bbbbbb; }
+            QPushButton:pressed { background-color: #bbbbbb; }
+        """)
+        header_outer.addWidget(self.clear_btn, 0, Qt.AlignTop | Qt.AlignRight)
+        main_layout.addWidget(header_widget)
+
+        # --- Top Steps Config Panel ---
+        steps_widget = QWidget()
+        steps_layout = QHBoxLayout(steps_widget)
+        steps_layout.setContentsMargins(0, 0, 0, 0)
+        steps_layout.setSpacing(15)
+
+        # Step 1 Card: Load Directory
+        self.load_dir_btn = QPushButton("Choose Image Directory")
         self.load_dir_btn.clicked.connect(self.load_directory)
-        left_panel.addWidget(self.load_dir_btn)
+        self.dir_label = QLabel("No directory selected")
+        card1 = self.create_step_card("STEP 1", "DATASET", self.load_dir_btn, self.dir_label)
+        steps_layout.addWidget(card1, 1)
 
+        # Step 2 Card: Set Output Folder
+        self.set_output_dir_btn = QPushButton("Set Output (.JSON)")
+        self.set_output_dir_btn.clicked.connect(self.set_output_directory)
+        self.output_dir_label = QLabel("Output: Default (Image Dir)")
+        card2 = self.create_step_card("STEP 2", "SAVE LOCATION", self.set_output_dir_btn, self.output_dir_label)
+        steps_layout.addWidget(card2, 1)
+
+        # Step 3 Card: Actions & Instructions
+        self.instruction_label = QLabel("• Left-click points to draw polygon\n• Right-click or double-click to finish\n• Enter distance in dialog")
+        card3 = self.create_step_card("STEP 3", "DRAWING GUIDE", None, self.instruction_label)
+        steps_layout.addWidget(card3, 1)
+
+        main_layout.addWidget(steps_widget)
+
+        # --- Main content splitter (left thumbnails | center image | right table) ---
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.setStyleSheet("QSplitter::handle { background-color: #e0e0e0; width: 1px; }")
+
+        # Left Panel (Thumbnails)
+        left_panel = QFrame()
+        left_panel.setObjectName("GlassPanel")
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(8, 8, 8, 8)
+        left_layout.setSpacing(6)
+        thumb_header = QLabel("Images")
+        thumb_header.setStyleSheet("font-size: 11px; font-weight: bold; color: #888888; letter-spacing: 1px;")
+        left_layout.addWidget(thumb_header)
+        
         self.thumbnail_list_widget = ResponsiveListWidget()
-        # self.thumbnail_list_widget.setFixedWidth(120) # Removed to allow resizing
-        self.thumbnail_list_widget.setViewMode(QListWidget.IconMode)
+        self.thumbnail_list_widget.setViewMode(QListWidget.ListMode)
         self.thumbnail_list_widget.setIconSize(THUMBNAIL_SIZE)
         self.thumbnail_list_widget.setSpacing(5)
         self.thumbnail_list_widget.itemClicked.connect(self._on_thumbnail_clicked)
-        self.thumbnail_list_widget.itemClicked.connect(self._on_thumbnail_clicked)
-        left_panel.addWidget(self.thumbnail_list_widget)
-        
-        # --- Splitter Setup ---
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(left_panel_widget)
+        left_layout.addWidget(self.thumbnail_list_widget, 1)
+        splitter.addWidget(left_panel)
 
-        # --- Center Panel (Image Viewer) ---
-        center_panel_widget = QWidget()
-        center_panel_widget.setObjectName("GlassPanel")
-        center_panel = QVBoxLayout(center_panel_widget)
-        image_nav_layout = QHBoxLayout()
-        self.prev_btn = QPushButton("<")
-        self.prev_btn.setFixedSize(30, 30)
-        self.prev_btn.clicked.connect(self.load_previous_image)
-        image_nav_layout.addWidget(self.prev_btn)
+        # Center Panel (Image View & Navigation)
+        center_panel = QFrame()
+        center_panel.setObjectName("GlassPanel")
+        center_layout = QVBoxLayout(center_panel)
+        center_layout.setContentsMargins(6, 6, 6, 6)
+        center_layout.setSpacing(6)
         
+        self.current_image_name_label = QLabel("No Image Loaded")
+        self.current_image_name_label.setFont(QFont("Arial", 13, QFont.Bold))
+        self.current_image_name_label.setAlignment(Qt.AlignCenter)
+        self.current_image_name_label.setStyleSheet("color: #555555; padding: 2px 0px;")
+        center_layout.addWidget(self.current_image_name_label)
+        
+        # Stacked widget to switch between upload placeholder and graphics view
+        self.center_stack = QStackedWidget()
+        
+        # Page 0: Upload Placeholder
+        self.upload_placeholder = UploadPlaceholder("Drop Image Folder Here\n- or -\nClick to Browse")
+        self.upload_placeholder.clicked.connect(self.load_directory)
+        self.upload_placeholder.files_dropped.connect(self._on_files_dropped)
+        self.center_stack.addWidget(self.upload_placeholder)
+        
+        # Page 1: Graphics View
         self.graphics_view = CustomGraphicsView()
         self.graphics_scene = QGraphicsScene()
         self.graphics_view.setScene(self.graphics_scene)
@@ -611,65 +460,131 @@ class AnnotationTool(QMainWindow):
         self.graphics_view.mouse_pressed.connect(self.mouse_press_event)
         self.graphics_view.mouse_moved.connect(self.mouse_move_event)
         self.graphics_view.mouse_double_clicked.connect(self.mouse_double_click_event)
-        image_nav_layout.addWidget(self.graphics_view)
-
-        self.next_btn = QPushButton(">")
-        self.next_btn.setFixedSize(30, 30)
-        self.next_btn.clicked.connect(self.load_next_image)
-        image_nav_layout.addWidget(self.next_btn)
-        center_panel.addLayout(image_nav_layout)
-
-        controls_layout = QHBoxLayout()
-        self.train_btn = QPushButton("Train Model")
-        self.train_btn.clicked.connect(self.start_training)
-        controls_layout.addWidget(self.train_btn)
-
-        self.show_dpt_btn = QPushButton("Show DPT Depth")
+        self.center_stack.addWidget(self.graphics_view)
+        
+        center_layout.addWidget(self.center_stack, 1)
+        
+        # Navigation toolbar
+        toolbar = QWidget()
+        toolbar.setStyleSheet("background-color: #f9f9f9; border-top: 1px solid #e8e8e8;")
+        toolbar_layout = QHBoxLayout(toolbar)
+        toolbar_layout.setContentsMargins(8, 6, 8, 6)
+        toolbar_layout.setSpacing(8)
+        
+        nav_btn_style = """
+            QPushButton {
+                background-color: #f5f5f5; border: 1px solid #ddd;
+                border-radius: 4px; color: #555; padding: 4px 12px;
+            }
+            QPushButton:hover { background-color: #e8e8e8; border: 1px solid #bbb; }
+            QPushButton:disabled { color: #cccccc; }
+        """
+        
+        self.prev_btn = QPushButton("‹ Prev")
+        self.prev_btn.setStyleSheet(nav_btn_style)
+        self.prev_btn.clicked.connect(self.load_previous_image)
+        toolbar_layout.addWidget(self.prev_btn)
+        
+        hint_lbl = QLabel("Draw polygon: click points; double-click / right-click to finish")
+        hint_lbl.setStyleSheet("font-size: 11px; color: #999999;")
+        hint_lbl.setAlignment(Qt.AlignCenter)
+        toolbar_layout.addWidget(hint_lbl, 1)
+        
+        self.show_dpt_btn = QPushButton("Toggle Depth Map")
+        self.show_dpt_btn.setStyleSheet(nav_btn_style)
         self.show_dpt_btn.setCheckable(True)
         self.show_dpt_btn.toggled.connect(self.toggle_dpt_view)
-        controls_layout.addWidget(self.show_dpt_btn)
-        controls_layout.addWidget(self.show_dpt_btn)
-        center_panel.addLayout(controls_layout)
-        splitter.addWidget(center_panel_widget)
+        toolbar_layout.addWidget(self.show_dpt_btn)
+        
+        self.next_btn = QPushButton("Next ›")
+        self.next_btn.setStyleSheet(nav_btn_style)
+        self.next_btn.clicked.connect(self.load_next_image)
+        toolbar_layout.addWidget(self.next_btn)
+        
+        center_layout.addWidget(toolbar)
+        splitter.addWidget(center_panel)
 
-        # --- Right Panel (Annotations Table and Metrics) ---
-        right_panel_widget = QWidget()
-        right_panel_widget.setObjectName("GlassPanel")
-        right_panel = QVBoxLayout(right_panel_widget)
-        right_panel.setContentsMargins(10, 10, 10, 10)
+        # Right Panel (Annotations Table)
+        right_panel = QFrame()
+        right_panel.setObjectName("GlassPanel")
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(10, 12, 10, 10)
+        right_layout.setSpacing(8)
+        
+        results_header = QLabel("Annotations")
+        results_header.setStyleSheet("font-size: 11px; font-weight: bold; color: #888888; letter-spacing: 1px;")
+        right_layout.addWidget(results_header)
+        
         self.annotation_table = QTableWidget()
         self.annotation_table.setColumnCount(3)
         self.annotation_table.setHorizontalHeaderLabels(["Image", "Coordinates", "Distance (m)"])
         self.annotation_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.annotation_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.annotation_table.setSelectionBehavior(QTableWidget.SelectRows)
-        right_panel.addWidget(self.annotation_table, 1)
-
-        table_buttons_layout = QHBoxLayout()
-        self.delete_annotation_btn = QPushButton("Delete Selected Annotation")
+        self.annotation_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.annotation_table.setAlternatingRowColors(True)
+        self.annotation_table.verticalHeader().setVisible(False)
+        self.annotation_table.itemSelectionChanged.connect(self._on_table_selection_changed)
+        self.annotation_table.setStyleSheet("""
+            QTableWidget {
+                border: 1px solid #e5e5e5;
+                border-radius: 6px;
+                gridline-color: #f0f0f0;
+            }
+            QTableWidget::item:alternate { background-color: #fafafa; }
+            QTableWidget::item:selected {
+                background-color: rgb(80, 200, 120);
+                color: black;
+            }
+        """)
+        right_layout.addWidget(self.annotation_table, 1)
+        
+        # Table action buttons
+        btn_divider = QFrame()
+        btn_divider.setFrameShape(QFrame.HLine)
+        btn_divider.setStyleSheet("color: #e5e5e5;")
+        right_layout.addWidget(btn_divider)
+        
+        table_btn_layout = QHBoxLayout()
+        table_btn_layout.setSpacing(8)
+        
+        self.delete_annotation_btn = QPushButton("Delete Selected")
         self.delete_annotation_btn.clicked.connect(self.delete_selected_annotation)
-        table_buttons_layout.addWidget(self.delete_annotation_btn)
-        self.save_btn = QPushButton("Save Current Annotations")
+        self.delete_annotation_btn.setStyleSheet("""
+            QPushButton {
+                background-color: white; border: 1px solid #e0e0e0;
+                border-radius: 4px; padding: 5px 10px; color: #c82828;
+            }
+            QPushButton:hover { background-color: #fff0f0; border: 1px solid #c82828; }
+        """)
+        table_btn_layout.addWidget(self.delete_annotation_btn)
+        
+        self.save_btn = QPushButton("Save Annotations")
         self.save_btn.clicked.connect(self.save_annotations_for_current_image)
-        table_buttons_layout.addWidget(self.save_btn)
-        right_panel.addLayout(table_buttons_layout)
+        self.save_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #c82828; color: white; border: 1px solid #c82828;
+                border-radius: 4px; padding: 5px 10px; font-weight: bold;
+            }
+            QPushButton:hover { background-color: #d83838; }
+            QPushButton:disabled { background-color: #f0f0f0; color: #aaaaaa; border: 1px solid #dddddd; }
+        """)
+        table_btn_layout.addWidget(self.save_btn)
+        
+        right_layout.addLayout(table_btn_layout)
+        splitter.addWidget(right_panel)
 
-        self.metrics_label = QLabel("Training Metrics: N/A")
-        self.metrics_label.setWordWrap(True)
-        self.metrics_label.setMinimumHeight(100)
-        right_panel.addWidget(self.metrics_label, 0, Qt.AlignTop)
-        splitter.addWidget(right_panel_widget)
-        
-        # Set stretch factors (0: Left, 1: Center, 2: Right)
+        # Stretch: narrow left | wide center | narrow right
         splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1) # Center panel takes more space
-        splitter.setStretchFactor(2, 0)
-        
-        main_layout.addWidget(splitter)
-        
+        splitter.setStretchFactor(1, 2)
+        splitter.setStretchFactor(2, 1)
+
+        main_layout.addWidget(splitter, 1)
+
         # --- Status Bar ---
-        self.status_label = QLabel("Ready")
-        self.statusBar().addWidget(self.status_label)
+        self.status_label = QLabel("Ready. Choose an image directory to begin.")
+        self.status_label.setObjectName("StatusLabel")
+        main_layout.addWidget(self.status_label, 0)
 
     def _on_thumbnail_clicked(self, item: QListWidgetItem):
         """Slot to handle clicks on thumbnail items."""
@@ -681,7 +596,11 @@ class AnnotationTool(QMainWindow):
 
     def load_directory(self):
         directory = QFileDialog.getExistingDirectory(self, "Select Image Directory")
-        if not directory:
+        if directory:
+            self.load_directory_from_path(directory)
+
+    def load_directory_from_path(self, directory: str):
+        if not directory or not os.path.isdir(directory):
             return
 
         self.save_annotations_for_current_image() # Save work before switching directory
@@ -692,13 +611,20 @@ class AnnotationTool(QMainWindow):
         # Reset UI and state
         self.thumbnail_list_widget.clear()
         self.image_item_map.clear()
+        self.image_list_item_map.clear()
         self.annotations_by_image.clear()
         self.annotation_table.setRowCount(0)
         self.graphics_scene.clear()
 
         if not self.image_files:
+            self.dir_label.setText("No images found")
             self.status_label.setText("No supported image files found in the selected directory.")
+            self.center_stack.setCurrentIndex(0) # Show placeholder
             return
+
+        # Default JSON output to image directory if not set
+        if not self.json_output_directory:
+            self.json_output_directory = self.image_directory
 
         for img_path in self.image_files:
             # Load annotations
@@ -709,14 +635,61 @@ class AnnotationTool(QMainWindow):
             item = QListWidgetItem()
             widget = ThumbnailItemWidget(pixmap, img_path)
             widget.set_annotated_status(bool(self.annotations_by_image[img_path]))
-            item.setSizeHint(widget.sizeHint())
+            
+            # Initial size hint calculation based on current list width
+            w = max(50, self.thumbnail_list_widget.width() - 24)
+            h = int(w * 0.75) + 15
+            item.setSizeHint(QSize(w, h))
+            
             self.thumbnail_list_widget.addItem(item)
             self.thumbnail_list_widget.setItemWidget(item, widget)
             self.image_item_map[img_path] = widget
+            self.image_list_item_map[img_path] = item
             
+        self.dir_label.setText(f"{os.path.basename(directory)} ({len(self.image_files)} images)")
+        self.output_dir_label.setText(f"Output: {os.path.basename(self.json_output_directory)}")
         self.status_label.setText(f"Loaded {len(self.image_files)} images.")
+        
+        self.center_stack.setCurrentIndex(1) # Show graphics view
         self.load_image(self.image_files[0])
         self.update_annotation_table()
+
+    def _on_files_dropped(self, paths):
+        if not paths:
+            return
+        target_path = paths[0]
+        if os.path.isdir(target_path):
+            self.load_directory_from_path(target_path)
+        elif os.path.isfile(target_path) and target_path.lower().endswith(SUPPORTED_IMAGE_FORMATS):
+            parent_dir = os.path.dirname(target_path)
+            self.load_directory_from_path(parent_dir)
+            self.select_image_by_path(target_path)
+
+    def select_image_by_path(self, target_path):
+        if target_path in self.image_list_item_map:
+            item = self.image_list_item_map[target_path]
+            self.thumbnail_list_widget.setCurrentItem(item)
+            self._on_thumbnail_clicked(item)
+
+    def set_output_directory(self):
+        directory = QFileDialog.getExistingDirectory(self, "Select JSON Output Directory")
+        if directory:
+            self.json_output_directory = directory
+            self.output_dir_label.setText(f"Output: {os.path.basename(directory)}")
+            self.status_label.setText(f"Output directory set to: {os.path.basename(directory)}")
+            # Reload annotations from new directory? 
+            if self.image_files:
+                reply = QMessageBox.question(self, "Reload Annotations?", 
+                                           "Do you want to reload annotations from this new directory? Unsaved changes will be lost.",
+                                           QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                if reply == QMessageBox.Yes:
+                    self.annotations_by_image.clear()
+                    for img_path in self.image_files:
+                         self.annotations_by_image[img_path] = self.load_annotations_from_file(img_path)
+                    
+                    # Update UI for current image
+                    if self.current_image_path:
+                        self.load_image(self.current_image_path)
 
     def load_image(self, image_path: str):
         """Loads and displays an image and its annotations."""
@@ -741,7 +714,15 @@ class AnnotationTool(QMainWindow):
         # Update UI selection
         if image_path in self.image_item_map:
             self.image_item_map[image_path].set_selected(True)
+        if image_path in self.image_list_item_map:
+            item = self.image_list_item_map[image_path]
+            self.thumbnail_list_widget.blockSignals(True)
+            self.thumbnail_list_widget.setCurrentItem(item)
+            self.thumbnail_list_widget.scrollToItem(item)
+            self.thumbnail_list_widget.blockSignals(False)
         self.status_label.setText(f"Displaying: {os.path.basename(image_path)}")
+        self.current_image_name_label.setText(os.path.basename(image_path))
+        self.update_navigation_buttons_state()
 
     def display_image(self, cv_img: np.ndarray):
         """Clears the scene and displays the given OpenCV image."""
@@ -774,9 +755,19 @@ class AnnotationTool(QMainWindow):
             super().keyPressEvent(event)
             
     def mouse_press_event(self, event):
+        if self.current_image_cv is None or self.current_image_path is None:
+            self.status_label.setText("No image loaded to annotate.")
+            return
+
         if not self.is_dpt_view_active:
             scene_pos = self.graphics_view.mapToScene(event.pos())
             
+            # Check if click is within image bounds
+            h, w, _ = self.current_image_cv.shape
+            if not (0 <= scene_pos.x() < w and 0 <= scene_pos.y() < h):
+                self.status_label.setText("Clicked outside image bounds.")
+                return
+
             if event.button() == Qt.LeftButton:
                 # Add point to polygon
                 self.drawing_polygon = True
@@ -805,14 +796,16 @@ class AnnotationTool(QMainWindow):
                 self.finish_polygon_annotation()
 
     def mouse_move_event(self, event):
+        if self.current_image_cv is None: return
         scene_pos = self.graphics_view.mapToScene(event.pos())
-        self.statusBar().showMessage(f"Coordinates: ({int(scene_pos.x())}, {int(scene_pos.y())})")
+        self.status_label.setText(f"Coordinates: ({int(scene_pos.x())}, {int(scene_pos.y())})")
         
         # Optional: Draw rubber band line from last point to cursor
         # (Implementation omitted for brevity/cleanliness, but can be added if requested)
 
     def mouse_double_click_event(self, event):
         """Handle double click to finish polygon."""
+        if self.current_image_cv is None or self.current_image_path is None: return
         if self.drawing_polygon:
             print("DEBUG: Double click detected, finishing polygon.")
             self.finish_polygon_annotation()
@@ -878,21 +871,16 @@ class AnnotationTool(QMainWindow):
                 self.draw_annotation(ann)
 
     def update_annotation_table(self):
-        """Populates the table with all annotations from all loaded images."""
+        """Populates the table with all annotations from all loaded images in chronological order."""
+        self.annotation_table.blockSignals(True)
         self.annotation_table.setRowCount(0)
-        current_anns = []
-        other_anns = []
-
-        # Separate current image's annotations to display them first
-        for img_path, annotations in self.annotations_by_image.items():
-            for ann in annotations:
-                if img_path == self.current_image_path:
-                    current_anns.append(ann)
-                else:
-                    other_anns.append(ann)
         
-        sorted_annotations = current_anns + sorted(other_anns, key=lambda x: os.path.basename(x['image_path']))
-
+        sorted_annotations = []
+        for img_path in self.image_files:
+            if img_path in self.annotations_by_image:
+                for ann in self.annotations_by_image[img_path]:
+                    sorted_annotations.append(ann)
+        
         for row_idx, ann in enumerate(sorted_annotations):
             self.annotation_table.insertRow(row_idx)
             items = [
@@ -906,9 +894,44 @@ class AnnotationTool(QMainWindow):
                     item.setData(Qt.UserRole, ann)
                 
                 if ann['image_path'] == self.current_image_path:
-                    item.setBackground(QColor("lightgreen"))
+                    item.setBackground(QColor(80, 200, 120))
+                else:
+                    item.setBackground(Qt.transparent)
 
                 self.annotation_table.setItem(row_idx, col_idx, item)
+
+        # Highlight/select rows for current image and scroll to the first one
+        self.annotation_table.clearSelection()
+        scrolled = False
+        for r_idx in range(self.annotation_table.rowCount()):
+            item = self.annotation_table.item(r_idx, 0)
+            if item:
+                ann = item.data(Qt.UserRole)
+                if ann and ann.get('image_path') == self.current_image_path:
+                    for col_idx in range(self.annotation_table.columnCount()):
+                        row_item = self.annotation_table.item(r_idx, col_idx)
+                        if row_item:
+                            row_item.setSelected(True)
+                    if not scrolled:
+                        self.annotation_table.scrollToItem(item)
+                        scrolled = True
+
+        self.annotation_table.blockSignals(False)
+
+    def _on_table_selection_changed(self):
+        """Slot to handle row selections in the annotation table."""
+        selected_items = self.annotation_table.selectedItems()
+        if not selected_items:
+            return
+        
+        # Get the annotation data from the first column of the selected rows
+        for item in selected_items:
+            ann = item.data(Qt.UserRole)
+            if ann:
+                img_path = ann.get('image_path')
+                if img_path and img_path != self.current_image_path:
+                    self.load_image(img_path)
+                break
 
     def delete_selected_annotation(self):
         selected_items = self.annotation_table.selectedItems()
@@ -940,24 +963,50 @@ class AnnotationTool(QMainWindow):
 
     def load_annotations_from_file(self, image_path: str) -> List[Dict]:
         """Loads annotations from a JSON file for a specific image."""
+        # Determine valid JSON path
+        basename = os.path.basename(image_path)
+        
+        # Priority 1: Check in json_output_directory
+        if self.json_output_directory:
+            ann_path = os.path.join(self.json_output_directory, basename + ".json")
+            if os.path.exists(ann_path):
+                 return self._read_json_file(ann_path, image_path)
+
+        # Priority 2: Check in same directory as image (Legacy)
         ann_path = image_path + ".json"
         if os.path.exists(ann_path):
-            try:
-                with open(ann_path, 'r') as f:
-                    annotations = json.load(f)
-                    # Add image_path to each loaded annotation for consistency
-                    for ann in annotations:
-                        ann['image_path'] = image_path
-                    return annotations
-            except (json.JSONDecodeError, TypeError):
-                print(f"Warning: Corrupt annotation file skipped: {ann_path}")
+            return self._read_json_file(ann_path, image_path)
+            
         return []
+
+    def _read_json_file(self, filepath: str, image_path: str) -> List[Dict]:
+        try:
+            with open(filepath, 'r') as f:
+                annotations = json.load(f)
+                # Add image_path to each loaded annotation for consistency
+                for ann in annotations:
+                    ann['image_path'] = image_path
+                return annotations
+        except (json.JSONDecodeError, TypeError):
+            print(f"Warning: Corrupt annotation file skipped: {filepath}")
+            return []
 
     def save_annotations_for_image(self, image_path: str):
         """Saves annotations for a specific image to its JSON file."""
         if image_path is None: return
         
-        ann_path = image_path + ".json"
+        basename = os.path.basename(image_path)
+        # Use output dir if set, otherwise image dir
+        dir_to_use = self.json_output_directory if self.json_output_directory else os.path.dirname(image_path)
+        
+        if not os.path.exists(dir_to_use):
+            try:
+                os.makedirs(dir_to_use)
+            except OSError:
+                self.status_label.setText(f"Error: Cannot create directory {dir_to_use}")
+                return
+
+        ann_path = os.path.join(dir_to_use, basename + ".json")
         annotations = self.annotations_by_image.get(image_path, [])
         
         # Create a clean list for saving (without 'qt_items' or 'image_path')
@@ -1019,47 +1068,16 @@ class AnnotationTool(QMainWindow):
         self.show_dpt_btn.setChecked(False)
         QMessageBox.critical(self, "DPT Error", msg)
 
-    def start_training(self):
-        if not self.image_directory:
-            QMessageBox.warning(self, "Not Ready", "Please load a directory first.")
-            return
-        if self.dpt_model is None:
-            QMessageBox.warning(self, "DPT Model Error", "The DPT model is not loaded. Cannot start training.")
-            return
-            
-        self.save_annotations_for_current_image()
-        self.set_buttons_enabled(False)
-        self.metrics_label.setText("Training in progress...")
-        
-        self.training_thread = TrainingThread(
-            self.image_files, self.annotations_by_image, self.dpt_processor,
-            self.dpt_model, self.device, self.image_directory
-        )
-        self.training_thread.update_status.connect(self.status_label.setText)
-        self.training_thread.training_finished.connect(self.on_training_finished)
-        self.training_thread.final_metrics_report.connect(self.metrics_label.setText)
-        self.training_thread.plot_generated.connect(self.show_plot_window)
-        self.training_thread.start()
-
-    def on_training_finished(self):
-        self.set_buttons_enabled(True)
-        self.status_label.setText("Training process finished.")
-        QMessageBox.information(self, "Training Complete", "Model training has finished. The model and scaler have been saved.")
-        self.training_thread = None
-
-    def show_plot_window(self, plot_path: str):
-        if self.plot_window and self.plot_window.isVisible():
-             self.plot_window.close()
-        self.plot_window = PlotWindow(plot_path, self)
-        self.plot_window.show()
+    # Training logic has been moved to training_DPT.py
 
     def set_buttons_enabled(self, enabled: bool):
         """Enables or disables all major UI controls."""
         self.load_dir_btn.setEnabled(enabled)
+        self.set_output_dir_btn.setEnabled(enabled)
         self.prev_btn.setEnabled(enabled)
         self.next_btn.setEnabled(enabled)
         self.save_btn.setEnabled(enabled)
-        self.train_btn.setEnabled(enabled)
+        # self.train_btn.setEnabled(enabled)
         self.show_dpt_btn.setEnabled(enabled)
         self.delete_annotation_btn.setEnabled(enabled)
         self.thumbnail_list_widget.setEnabled(enabled)

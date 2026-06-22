@@ -1,5 +1,6 @@
 import sys
 import os
+from PyInstaller.utils.hooks import collect_all
 
 block_cipher = None
 
@@ -10,17 +11,27 @@ is_win = sys.platform == 'win32'
 # Icon selection
 icon_file = 'icon.icns' if is_mac else 'icon.ico'
 
+# Collect all data, binaries, and hidden imports for ultralytics
+tmp_ret = collect_all('ultralytics')
+datas = tmp_ret[0]
+binaries = tmp_ret[1]
+hiddenimports = tmp_ret[2]
+
+# Add other manual data files
+datas += [
+    ('annotate_train_DPT.py', '.'),
+    ('calculator_DPT.py', '.'),
+    ('training_DPT.py', '.'), # Include the new training module
+    ('styles.py', '.'), 
+    ('icon.png', '.'),
+]
+
 a = Analysis(
-    ['launcher.py'],
+    ['main_app.py'], # Entry point changed to main_app.py
     pathex=[], 
-    binaries=[],
-    datas=[
-        ('annotate_train_DPT.py', '.'),
-        ('calculator_DPT.py', '.'),
-        ('styles.py', '.'), # Include the new styles file
-        ('icon.png', '.'),
-    ],
-    hiddenimports=[],
+    binaries=binaries,
+    datas=datas,
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

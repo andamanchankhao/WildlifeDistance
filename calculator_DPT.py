@@ -14,10 +14,12 @@ from PyQt5.QtWidgets import (
     QLabel, QPushButton, QGraphicsView, QGraphicsScene, QFileDialog,
     QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView,
     QListWidget, QListWidgetItem, QGraphicsPixmapItem, QProgressDialog,
-    QSplitter
+    QSplitter, QFrame, QStackedWidget
 )
 from PyQt5.QtGui import QPixmap, QImage, QPainter, QColor, QFont, QIcon, QPen
 from PyQt5.QtCore import Qt, QSize, pyqtSignal, QThread
+
+from styles import UploadPlaceholder
 
 # --- Dependency Imports with User-Friendly Feedback ---
 # These blocks provide clearer instructions if a library is missing.
@@ -117,29 +119,31 @@ class AutoDetectWorker(QThread):
     finished = pyqtSignal()
     error = pyqtSignal(str)
 
-    def __init__(self, image_files, dpt_model, dpt_processor, distance_model, device):
+    def __init__(self, image_files, dpt_model, dpt_processor, distance_model, device, yolo_model=None):
         super().__init__()
         self.image_files = image_files
         self.dpt_model = dpt_model
         self.dpt_processor = dpt_processor
         self.distance_model = distance_model
         self.device = device
-        self.yolo_model = None
+        # Bug H fix: accept a pre-loaded YOLO model instead of downloading each run.
+        self.yolo_model = yolo_model
         self.is_running = True
 
     def run(self):
         try:
             self.progress_update.emit(0, len(self.image_files), "Loading Object Detection Model...")
-            # Load YOLOv5s from torch hub (pretrained on COCO)
-            # COCO animal classes: bird, cat, dog, horse, sheep, cow, elephant, bear, zebra, giraffe
-            # Class IDs: 14-23 (roughly, need to check specific model mapping or use names)
-            try:
-                self.yolo_model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True, trust_repo=True)
-                self.yolo_model.to(self.device)
-                self.yolo_model.eval()
-            except Exception as e:
-                self.error.emit(f"Failed to load YOLOv5 model: {e}")
-                return
+            # Bug H fix: only load YOLO from hub if one was not already provided.
+            if self.yolo_model is None:
+                try:
+                    self.yolo_model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True, trust_repo=True)
+                    self.yolo_model.to(self.device)
+                    self.yolo_model.eval()
+                except Exception as e:
+                    self.error.emit(f"Failed to load YOLOv5 model: {e}")
+                    return
+            else:
+                self.progress_update.emit(0, len(self.image_files), "Using cached YOLO model...")
 
             # COCO classes that are animals
             ANIMAL_CLASSES = [
@@ -208,135 +212,237 @@ class AutoDetectWorker(QThread):
 
     def stop(self):
         self.is_running = False
-MODEL_FILENAME_TEMPLATE = "{camera_id}_distance_model.joblib"
 
-class DistanceCalculator(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("Wildlife Distance Calculator (DPT)")
-        self.setGeometry(100, 100, 1400, 900)
 
-        # Model and data state
+class DistanceCalculator(QWidget):
+    def __init__(self, parent=None, shared_dpt_processor=None, shared_dpt_model=None, shared_device=None):
+        super().__init__(parent)
+
         # Model and data state
         self.distance_model = None
         self.image_files = []
         self.current_image_index = 0
-        self.image_data = {} # Stores annotations: {image_path: [annotation_dict, ...]}
+        self.image_data = {}  # Stores annotations: {image_path: [annotation_dict, ...]}
         self.next_annotation_id = 0
-        self.camera_id = "default" # Default camera ID
+        self.camera_id = "default"  # Default camera ID
 
         # Image and graphics state
         self.current_image_path = None
         self.current_image_cv = None
-        self.current_depth_map = None # REVISED: Cache for the depth map
+        # Opt-3: Cache stores both the depth map and the path it was generated for,
+        # so we never serve a stale cache hit when the image changes.
+        self.current_depth_map = None           # the cached numpy depth map
+        self.current_depth_map_path = None      # which image path the cache belongs to
         self._pending_coords_for_prediction = None
         self.current_pixmap_item = None
         self.is_dpt_view_active = False
 
-        # DPT model state
-        self.dpt_processor = None
-        self.dpt_model = None
-        self.device = "cuda" if torch and torch.cuda.is_available() else "cpu"
-        
+        # Opt-1: Use shared model if provided; otherwise load our own.
+        if shared_dpt_processor is not None and shared_dpt_model is not None:
+            self.dpt_processor = shared_dpt_processor
+            self.dpt_model = shared_dpt_model
+            self.device = shared_device or "cpu"
+        else:
+            self.dpt_processor = None
+            self.dpt_model = None
+            self.device = "cuda" if torch and torch.cuda.is_available() else "cpu"
+
+        # Bug H fix: cache the YOLO model so it is loaded only once per session.
+        self.yolo_model = None
+
         # UI element references
         self.thumbnail_items = {}
 
         # Initialize UI and models
         self.init_ui()
-        self.load_dpt_inference_model()
+        # Only load DPT model internally if we did not receive a shared one.
+        if self.dpt_model is None:
+            self.load_dpt_inference_model()
+        else:
+            self.status_label.setText(f"DPT model ready (shared, device={self.device}).")
         self.update_navigation_buttons_state()
+
+
+    # ── Helper ────────────────────────────────────────────────────────────
+    def _create_step_card(self, step_num: str, title: str, button: QPushButton, info_label: QLabel) -> QFrame:
+        card = QFrame()
+        card.setStyleSheet("""
+            QFrame {
+                background-color: white;
+                border: 1px solid #e0e0e0;
+                border-radius: 8px;
+            }
+            QLabel { border: none; background-color: transparent; }
+        """)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(15, 12, 15, 12)
+        layout.setSpacing(8)
+
+        header_row = QHBoxLayout()
+        step_lbl = QLabel(step_num)
+        step_lbl.setStyleSheet("font-weight: bold; color: #c82828; font-size: 13px;")
+        title_lbl = QLabel(title)
+        title_lbl.setStyleSheet("font-weight: bold; color: #333333; font-size: 13px;")
+        header_row.addWidget(step_lbl)
+        header_row.addWidget(title_lbl)
+        header_row.addStretch()
+        layout.addLayout(header_row)
+
+        layout.addWidget(button)
+
+        info_label.setStyleSheet("color: #666666; font-size: 12px;")
+        info_label.setWordWrap(True)
+        info_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        layout.addWidget(info_label)
+
+        return card
 
     def init_ui(self):
         """Initializes the main UI layout and widgets."""
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        main_layout = QHBoxLayout(central_widget)
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(15, 15, 15, 15)
+        main_layout.setSpacing(15)
 
-        # --- Create and add panels to the main layout ---
-        # --- Create and add panels to the main layout ---
-        splitter = QSplitter(Qt.Horizontal)
-        
-        left_panel = self._create_left_panel()
-        right_panel = self._create_right_panel()
+        # ── Header row (title + Clear button) ────────────────────────────
+        header_widget = QWidget()
+        header_outer = QHBoxLayout(header_widget)
+        header_outer.setContentsMargins(0, 0, 0, 5)
+        header_outer.setSpacing(0)
 
-        splitter.addWidget(left_panel)
-        splitter.addWidget(right_panel)
-        
-        # Set initial sizes (approximate 1:4 ratio)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 4)
+        title_block = QWidget()
+        title_layout = QVBoxLayout(title_block)
+        title_layout.setContentsMargins(0, 0, 0, 0)
+        title_layout.setSpacing(4)
+        title_lbl = QLabel("Distance Calculator")
+        title_lbl.setStyleSheet("font-size: 18px; font-weight: bold; color: #1e1e1e;")
+        desc_lbl = QLabel("Click anywhere on an image to measure the distance to the camera using the loaded calibration model.")
+        desc_lbl.setStyleSheet("font-size: 13px; color: #666666;")
+        title_layout.addWidget(title_lbl)
+        title_layout.addWidget(desc_lbl)
+        header_outer.addWidget(title_block, 1)
 
-        main_layout.addWidget(splitter)
+        self.clear_btn = QPushButton("Clear All")
+        self.clear_btn.setFixedSize(90, 32)
+        self.clear_btn.clicked.connect(self.clear_all)
+        self.clear_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #e0e0e0;
+                color: #555555;
+                border: 1px solid #cccccc;
+                border-radius: 6px;
+                font-size: 13px;
+                font-weight: 500;
+            }
+            QPushButton:hover { background-color: #d0d0d0; color: #333333; border: 1px solid #bbbbbb; }
+            QPushButton:pressed { background-color: #bbbbbb; }
+        """)
+        header_outer.addWidget(self.clear_btn, 0, Qt.AlignTop | Qt.AlignRight)
+        main_layout.addWidget(header_widget)
 
-        self.status_label = QLabel("Ready. Please load a Keras model and a scaler file.")
-        self.statusBar().addWidget(self.status_label)
+        # ── Step Cards ────────────────────────────────────────────────────
+        steps_widget = QWidget()
+        steps_layout = QHBoxLayout(steps_widget)
+        steps_layout.setContentsMargins(0, 0, 0, 0)
+        steps_layout.setSpacing(15)
 
-    def _create_left_panel(self):
-        """Creates the left panel widget containing controls and thumbnails."""
-        panel = QWidget()
-        panel.setObjectName("GlassPanel") # Apply glass style
-        layout = QVBoxLayout(panel)
-        # panel.setMaximumWidth(280) # Removed to allow resizing
-
-        # Image Directory Controls
+        # Card 1: Load Images
         self.load_dir_btn = QPushButton("Load Image Directory")
         self.load_dir_btn.clicked.connect(self.load_image_directory)
-        layout.addWidget(self.load_dir_btn)
+        self.load_single_img_btn = QPushButton("Load Single Image")
+        self.load_single_img_btn.clicked.connect(self.load_single_image)
+        self.dir_info_label = QLabel("No images loaded")
 
-        # Model/Scaler Loading Group
-        model_scaler_group = QWidget()
-        model_scaler_layout = QVBoxLayout(model_scaler_group)
-        # Removed inline style to use QSS
+        card1_frame = QFrame()
+        card1_frame.setStyleSheet("""
+            QFrame { background-color: white; border: 1px solid #e0e0e0; border-radius: 8px; }
+            QLabel { border: none; background-color: transparent; }
+        """)
+        c1_layout = QVBoxLayout(card1_frame)
+        c1_layout.setContentsMargins(15, 12, 15, 12)
+        c1_layout.setSpacing(8)
+        c1_header = QHBoxLayout()
+        c1_step = QLabel("STEP 1")
+        c1_step.setStyleSheet("font-weight: bold; color: #c82828; font-size: 13px;")
+        c1_title = QLabel("IMAGES")
+        c1_title.setStyleSheet("font-weight: bold; color: #333333; font-size: 13px;")
+        c1_header.addWidget(c1_step)
+        c1_header.addWidget(c1_title)
+        c1_header.addStretch()
+        c1_layout.addLayout(c1_header)
+        c1_layout.addWidget(self.load_dir_btn)
+        c1_layout.addWidget(self.load_single_img_btn)
+        self.dir_info_label.setStyleSheet("color: #666666; font-size: 12px;")
+        self.dir_info_label.setWordWrap(True)
+        c1_layout.addWidget(self.dir_info_label)
+        steps_layout.addWidget(card1_frame, 1)
 
-
+        # Card 2: Load Model
         self.load_model_btn = QPushButton("Load Distance Model")
         self.load_model_btn.clicked.connect(self.load_distance_model)
         self.model_status_label = QLabel("Model: <font color='red'>Not Loaded</font>")
-        
-        model_scaler_layout.addWidget(self.load_model_btn)
-        model_scaler_layout.addWidget(self.model_status_label)
-        layout.addWidget(model_scaler_group)
+        card2 = self._create_step_card("STEP 2", "MODEL", self.load_model_btn, self.model_status_label)
+        steps_layout.addWidget(card2, 1)
 
-        # Auto-Calculate Button
-        self.auto_calc_btn = QPushButton("Auto-Calculate All")
+        # Card 3: Auto-Calculate
+        self.auto_calc_btn = QPushButton("Auto-Calculate All Images")
+        self.auto_calc_btn.setEnabled(False)
+        self.auto_calc_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #c82828; color: white; font-weight: bold;
+                border: 1px solid #c82828;
+            }
+            QPushButton:hover { background-color: #d83838; }
+            QPushButton:disabled { background-color: #f0f0f0; color: #aaaaaa; border: 1px solid #dddddd; }
+        """)
         self.auto_calc_btn.clicked.connect(self.auto_calculate_all)
-        self.auto_calc_btn.setEnabled(False) # Disabled until everything is loaded
-        layout.addWidget(self.auto_calc_btn)
+        auto_info = QLabel("Auto-detect animals & measure distances")
+        card3 = self._create_step_card("STEP 3", "AUTO-DETECT", self.auto_calc_btn, auto_info)
+        steps_layout.addWidget(card3, 1)
 
-        # Thumbnail List
+        main_layout.addWidget(steps_widget)
+
+        # ── Main content splitter (left thumbnails | center image | right table) ──
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.setStyleSheet("QSplitter::handle { background-color: #e0e0e0; width: 1px; }")
+
+        # Left: thumbnail strip
+        left_panel = QFrame()
+        left_panel.setObjectName("GlassPanel")
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(8, 8, 8, 8)
+        left_layout.setSpacing(6)
+        thumb_header = QLabel("Images")
+        thumb_header.setStyleSheet("font-size: 11px; font-weight: bold; color: #888888; letter-spacing: 1px;")
+        left_layout.addWidget(thumb_header)
         self.thumbnail_list_widget = ResponsiveListWidget()
         self.thumbnail_list_widget.setIconSize(QSize(100, 80))
         self.thumbnail_list_widget.itemClicked.connect(self.thumbnail_clicked)
-        layout.addWidget(self.thumbnail_list_widget)
+        left_layout.addWidget(self.thumbnail_list_widget, 1)
+        splitter.addWidget(left_panel)
 
-        return panel
-
-    def _create_right_panel(self):
-        """Creates the right panel containing the image viewer and results table."""
-        panel = QWidget()
-        panel.setObjectName("GlassPanel") # Apply glass style
-        layout = QVBoxLayout(panel)
-
-        content_layout = QHBoxLayout()
-        image_view_widget = self._create_image_view_widget()
-        table_widget = self._create_table_widget()
-
-        content_layout.addWidget(image_view_widget, 3) # Image view takes 3 parts
-        content_layout.addWidget(table_widget, 2)    # Table takes 2 parts
-        layout.addLayout(content_layout)
-
-        return panel
-
-    def _create_image_view_widget(self):
-        """Creates the widget for displaying the main image and its controls."""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
+        # Center: image viewer
+        center_panel = QFrame()
+        center_panel.setObjectName("GlassPanel")
+        center_layout = QVBoxLayout(center_panel)
+        center_layout.setContentsMargins(6, 6, 6, 6)
+        center_layout.setSpacing(6)
 
         self.current_image_name_label = QLabel("No Image Loaded")
-        self.current_image_name_label.setFont(QFont("Arial", 14, QFont.Bold))
+        self.current_image_name_label.setFont(QFont("Arial", 13, QFont.Bold))
         self.current_image_name_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(self.current_image_name_label)
+        self.current_image_name_label.setStyleSheet("color: #555555; padding: 2px 0px;")
+        center_layout.addWidget(self.current_image_name_label)
 
+        # Stacked widget to switch between upload placeholder and graphics view
+        self.center_stack = QStackedWidget()
+        
+        # Page 0: Upload Placeholder
+        self.upload_placeholder = UploadPlaceholder("Drop Image File or Folder Here\n- or -\nClick to Browse")
+        self.upload_placeholder.clicked.connect(self.load_image_directory)
+        self.upload_placeholder.files_dropped.connect(self._on_files_dropped)
+        self.center_stack.addWidget(self.upload_placeholder)
+        
+        # Page 1: Graphics View
         self.graphics_view = CustomGraphicsView()
         self.graphics_scene = QGraphicsScene()
         self.graphics_view.setScene(self.graphics_scene)
@@ -344,30 +450,60 @@ class DistanceCalculator(QMainWindow):
         self.graphics_view.setMouseTracking(True)
         self.graphics_view.mouse_pressed.connect(self.handle_mouse_press)
         self.graphics_view.mouse_moved.connect(self.handle_mouse_move)
-        layout.addWidget(self.graphics_view)
+        self.center_stack.addWidget(self.graphics_view)
+        
+        center_layout.addWidget(self.center_stack, 1)
 
-        # Navigation Controls
-        nav_layout = QHBoxLayout()
-        self.prev_btn = QPushButton("< Prev")
+        # Bottom toolbar
+        toolbar = QWidget()
+        toolbar.setStyleSheet("background-color: #f9f9f9; border-top: 1px solid #e8e8e8;")
+        toolbar_layout = QHBoxLayout(toolbar)
+        toolbar_layout.setContentsMargins(8, 6, 8, 6)
+        toolbar_layout.setSpacing(8)
+
+        nav_btn_style = """
+            QPushButton {
+                background-color: #f5f5f5; border: 1px solid #ddd;
+                border-radius: 4px; color: #555; padding: 4px 12px;
+            }
+            QPushButton:hover { background-color: #e8e8e8; border: 1px solid #bbb; }
+            QPushButton:disabled { color: #cccccc; }
+        """
+
+        self.prev_btn = QPushButton("‹ Prev")
+        self.prev_btn.setStyleSheet(nav_btn_style)
         self.prev_btn.clicked.connect(self.load_previous_image)
+        toolbar_layout.addWidget(self.prev_btn)
+
+        hint_lbl = QLabel("Click image to measure distance")
+        hint_lbl.setStyleSheet("font-size: 11px; color: #999999;")
+        hint_lbl.setAlignment(Qt.AlignCenter)
+        toolbar_layout.addWidget(hint_lbl, 1)
+
         self.show_dpt_btn = QPushButton("Toggle Depth Map")
+        self.show_dpt_btn.setStyleSheet(nav_btn_style)
         self.show_dpt_btn.clicked.connect(self.toggle_dpt_view)
-        self.next_btn = QPushButton("Next >")
+        toolbar_layout.addWidget(self.show_dpt_btn)
+
+        toolbar_layout.addWidget(QLabel(""))  # spacer
+        self.next_btn = QPushButton("Next ›")
+        self.next_btn.setStyleSheet(nav_btn_style)
         self.next_btn.clicked.connect(self.load_next_image)
+        toolbar_layout.addWidget(self.next_btn)
 
-        nav_layout.addWidget(self.prev_btn)
-        nav_layout.addStretch()
-        nav_layout.addWidget(self.show_dpt_btn)
-        nav_layout.addStretch()
-        nav_layout.addWidget(self.next_btn)
-        layout.addLayout(nav_layout)
+        center_layout.addWidget(toolbar)
+        splitter.addWidget(center_panel)
 
-        return widget
+        # Right: results table
+        right_panel = QFrame()
+        right_panel.setObjectName("GlassPanel")
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(10, 12, 10, 10)
+        right_layout.setSpacing(8)
 
-    def _create_table_widget(self):
-        """Creates the widget for the results table and its controls."""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
+        results_header = QLabel("Results")
+        results_header.setStyleSheet("font-size: 11px; font-weight: bold; color: #888888; letter-spacing: 1px;")
+        right_layout.addWidget(results_header)
 
         self.results_table = QTableWidget()
         self.results_table.setColumnCount(len(TABLE_HEADERS))
@@ -375,21 +511,109 @@ class DistanceCalculator(QMainWindow):
         self.results_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.results_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.results_table.setSelectionMode(QTableWidget.SingleSelection)
-        self.results_table.itemSelectionChanged.connect(self.update_delete_button_state)
-        layout.addWidget(self.results_table)
+        self.results_table.setAlternatingRowColors(True)
+        self.results_table.verticalHeader().setVisible(False)
+        self.results_table.itemSelectionChanged.connect(self._on_table_selection_changed)
+        self.results_table.setStyleSheet("""
+            QTableWidget {
+                border: 1px solid #e5e5e5;
+                border-radius: 6px;
+                gridline-color: #f0f0f0;
+            }
+            QTableWidget::item:alternate { background-color: #fafafa; }
+            QTableWidget::item:selected {
+                background-color: rgb(80, 200, 120);
+                color: black;
+            }
+        """)
+        right_layout.addWidget(self.results_table, 1)
 
-        # Table buttons
-        button_layout = QHBoxLayout()
+        # Table action buttons
+        btn_divider = QFrame()
+        btn_divider.setFrameShape(QFrame.HLine)
+        btn_divider.setStyleSheet("color: #e5e5e5;")
+        right_layout.addWidget(btn_divider)
+
+        table_btn_layout = QHBoxLayout()
+        table_btn_layout.setSpacing(8)
+
         self.delete_row_btn = QPushButton("Delete Selected")
         self.delete_row_btn.clicked.connect(self.delete_selected_row)
-        self.export_csv_btn = QPushButton("Export All to CSV")
+        self.delete_row_btn.setStyleSheet("""
+            QPushButton {
+                background-color: white; border: 1px solid #e0e0e0;
+                border-radius: 4px; padding: 5px 10px; color: #c82828;
+            }
+            QPushButton:hover { background-color: #fff0f0; border: 1px solid #c82828; }
+        """)
+        table_btn_layout.addWidget(self.delete_row_btn)
+
+        self.export_csv_btn = QPushButton("Export to CSV")
         self.export_csv_btn.clicked.connect(self.export_to_csv)
+        self.export_csv_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #c82828; color: white; border: 1px solid #c82828;
+                border-radius: 4px; padding: 5px 10px; font-weight: bold;
+            }
+            QPushButton:hover { background-color: #d83838; }
+            QPushButton:disabled { background-color: #f0f0f0; color: #aaaaaa; border: 1px solid #dddddd; }
+        """)
+        table_btn_layout.addWidget(self.export_csv_btn)
 
-        button_layout.addWidget(self.delete_row_btn)
-        button_layout.addWidget(self.export_csv_btn)
-        layout.addLayout(button_layout)
+        right_layout.addLayout(table_btn_layout)
+        splitter.addWidget(right_panel)
 
-        return widget
+        # Stretch: narrow left | wide center | narrow right
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 2)
+        splitter.setStretchFactor(2, 1)
+
+        main_layout.addWidget(splitter, 1)
+
+        # ── Status Bar ─────────────────────────────────────────────────────
+        self.status_label = QLabel("Ready. Load images and a distance model to begin.")
+        self.status_label.setObjectName("StatusLabel")
+        main_layout.addWidget(self.status_label, 0)
+
+    def clear_all(self):
+        """Reset all state and clear the UI back to its initial state."""
+        self.image_files = []
+        self.current_image_index = 0
+        self.image_data.clear()
+        self.next_annotation_id = 0
+        self.current_image_path = None
+        self.current_image_cv = None
+        self.current_depth_map = None
+        self.current_depth_map_path = None
+        self._pending_coords_for_prediction = None
+        self.current_pixmap_item = None
+        self.is_dpt_view_active = False
+        self.distance_model = None
+
+        # Reset thumbnail strip
+        self.thumbnail_list_widget.clear()
+        self.thumbnail_items.clear()
+
+        # Reset image viewer
+        self.graphics_scene.clear()
+        self.current_image_name_label.setText("No Image Loaded")
+
+        # Reset results table
+        self.results_table.setRowCount(0)
+
+        # Reset labels
+        self.dir_info_label.setText("No images loaded")
+        self.model_status_label.setText("Model: <font color='red'>Not Loaded</font>")
+
+        # Reset buttons
+        self.auto_calc_btn.setEnabled(False)
+        self.export_csv_btn.setEnabled(False)
+
+        self.status_label.setText("Cleared. Please load images and a distance model to begin.")
+        self.center_stack.setCurrentIndex(0)
+        self.update_navigation_buttons_state()
+
+
 
     def load_dpt_inference_model(self):
         """Loads the DPT model from Hugging Face."""
@@ -442,7 +666,11 @@ class DistanceCalculator(QMainWindow):
     def load_image_directory(self):
         """Loads all supported images from a user-selected directory."""
         directory = QFileDialog.getExistingDirectory(self, "Select Image Directory")
-        if not directory: return
+        if directory:
+            self.load_directory_from_path(directory)
+
+    def load_directory_from_path(self, directory: str):
+        if not directory or not os.path.isdir(directory): return
 
         self.image_files = sorted([
             os.path.join(directory, f) for f in os.listdir(directory)
@@ -458,15 +686,55 @@ class DistanceCalculator(QMainWindow):
             for img_path in self.image_files:
                 self.add_thumbnail(img_path)
             self.current_image_index = 0
+            self.center_stack.setCurrentIndex(1) # Show graphics view
             self.display_image(self.image_files[self.current_image_index])
+            self.dir_info_label.setText(f"{os.path.basename(directory)} ({len(self.image_files)} images)")
             self.status_label.setText(f"Loaded {len(self.image_files)} images.")
             
             # Auto-detect model
             self.check_and_autoload_model(directory)
         else:
+            self.dir_info_label.setText("No images found")
             self.status_label.setText("No supported image files found in the selected directory.")
+            self.center_stack.setCurrentIndex(0) # Show placeholder
         
         self.update_navigation_buttons_state()
+
+    def load_single_image(self):
+        """Loads a single image file."""
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select Image", "", "Images (*.png *.jpg *.jpeg *.bmp)")
+        if file_path:
+            self.load_image_from_path(file_path)
+
+    def load_image_from_path(self, file_path: str):
+        if not file_path or not os.path.isfile(file_path): return
+
+        self.image_files = [file_path]
+        
+        self.thumbnail_list_widget.clear()
+        self.thumbnail_items.clear()
+        self.image_data.clear()
+        
+        self.add_thumbnail(file_path)
+        self.current_image_index = 0
+        self.center_stack.setCurrentIndex(1) # Show graphics view
+        self.display_image(self.image_files[0])
+        self.dir_info_label.setText(f"Single image: {os.path.basename(file_path)}")
+        self.status_label.setText(f"Loaded single image: {os.path.basename(file_path)}")
+        
+        # Try to auto-load model from this image's directory
+        self.check_and_autoload_model(os.path.dirname(file_path))
+        
+        self.update_navigation_buttons_state()
+
+    def _on_files_dropped(self, paths):
+        if not paths:
+            return
+        target_path = paths[0]
+        if os.path.isdir(target_path):
+            self.load_directory_from_path(target_path)
+        elif os.path.isfile(target_path) and target_path.lower().endswith(VALID_IMAGE_EXTENSIONS):
+            self.load_image_from_path(target_path)
 
     def check_and_autoload_model(self, directory):
         """Scans the directory for a .joblib distance model and auto-loads it."""
@@ -520,7 +788,11 @@ class DistanceCalculator(QMainWindow):
         self.is_dpt_view_active = False
         self.show_dpt_btn.setText("Show Depth Map")
         self.current_image_path = image_path
-        self.current_depth_map = None # REVISED: Invalidate depth map cache
+
+        # Opt-3: Only invalidate depth cache if we are loading a different image.
+        if self.current_depth_map_path != image_path:
+            self.current_depth_map = None
+            self.current_depth_map_path = None
 
         self.current_image_cv = cv2.imread(image_path)
         if self.current_image_cv is None:
@@ -634,7 +906,9 @@ class DistanceCalculator(QMainWindow):
     def on_depth_map_generated(self, depth_map):
         """Callback for when the DPT worker successfully finishes."""
         self.progress_dialog.close()
-        self.current_depth_map = depth_map # Cache the result
+        # Opt-3: store both the map and the path it belongs to.
+        self.current_depth_map = depth_map
+        self.current_depth_map_path = self.current_image_path
         
         if self._pending_coords_for_prediction is not None:
             self.status_label.setText("Depth map generated. Predicting distance...")
@@ -720,6 +994,7 @@ class DistanceCalculator(QMainWindow):
         self.auto_calc_btn.setEnabled(can_auto_calc)
 
     def update_results_table(self):
+        self.results_table.blockSignals(True)
         self.results_table.setRowCount(0)
         
         # Collect all annotations from all images
@@ -739,6 +1014,9 @@ class DistanceCalculator(QMainWindow):
             dist_item = QTableWidgetItem(f"{ann['predicted_distance']:.2f}")
             coord_item = QTableWidgetItem(f"({ann['coords'][0]}, {ann['coords'][1]})")
             
+            # Store reference to the annotation object in the first item
+            id_item.setData(Qt.UserRole, ann)
+            
             # Highlight if it belongs to the current image
             if ann['image_path'] == self.current_image_path:
                 highlight_color = QColor(80, 200, 120) # Light Green
@@ -751,9 +1029,51 @@ class DistanceCalculator(QMainWindow):
             self.results_table.setItem(i, 1, name_item)
             self.results_table.setItem(i, 2, dist_item)
             self.results_table.setItem(i, 3, coord_item)
+            
+        # Highlight/select rows for current image and scroll to the first one
+        self.results_table.clearSelection()
+        scrolled = False
+        for r_idx in range(self.results_table.rowCount()):
+            item = self.results_table.item(r_idx, 0)
+            if item:
+                ann = item.data(Qt.UserRole)
+                if ann and ann.get('image_path') == self.current_image_path:
+                    for col_idx in range(self.results_table.columnCount()):
+                        row_item = self.results_table.item(r_idx, col_idx)
+                        if row_item:
+                            row_item.setSelected(True)
+                    if not scrolled:
+                        self.results_table.scrollToItem(item)
+                        scrolled = True
         
         self.export_csv_btn.setEnabled(bool(all_annotations))
         self.update_delete_button_state()
+        self.results_table.blockSignals(False)
+
+    def _on_table_selection_changed(self):
+        """Slot to handle row selections in the results table."""
+        selected_items = self.results_table.selectedItems()
+        self.update_delete_button_state()
+        if not selected_items:
+            return
+        
+        # Get the annotation data from the first column of the selected rows
+        for item in selected_items:
+            row = item.row()
+            first_col_item = self.results_table.item(row, 0)
+            if first_col_item:
+                ann = first_col_item.data(Qt.UserRole)
+                if ann:
+                    img_path = ann.get('image_path')
+                    if img_path and img_path != self.current_image_path:
+                        try:
+                            index = self.image_files.index(img_path)
+                            if index != self.current_image_index:
+                                self.current_image_index = index
+                                self.display_image(img_path)
+                        except ValueError:
+                            pass
+                    break
 
     def update_delete_button_state(self):
         self.delete_row_btn.setEnabled(bool(self.results_table.selectedItems()))
@@ -865,7 +1185,8 @@ class DistanceCalculator(QMainWindow):
 
         self.auto_worker = AutoDetectWorker(
             self.image_files, self.dpt_model, self.dpt_processor, 
-            self.distance_model, self.device
+            self.distance_model, self.device,
+            yolo_model=self.yolo_model  # Bug H fix: pass cached model to avoid re-download.
         )
         self.auto_worker.progress_update.connect(self.on_auto_calc_progress)
         self.auto_worker.detection_found.connect(self.on_auto_detection_found)
@@ -901,6 +1222,9 @@ class DistanceCalculator(QMainWindow):
 
     def on_auto_calc_finished(self):
         self.progress_dialog.close()
+        # Bug H fix: persist the YOLO model on the instance for the next run.
+        if self.auto_worker.yolo_model is not None:
+            self.yolo_model = self.auto_worker.yolo_model
         self.update_thumbnail_status()
         self.update_results_table()
         QMessageBox.information(self, "Auto-Calculation Complete", "Finished processing all images.")
