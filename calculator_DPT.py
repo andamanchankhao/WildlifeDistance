@@ -136,7 +136,20 @@ class AutoDetectWorker(QThread):
             # Bug H fix: only load YOLO from hub if one was not already provided.
             if self.yolo_model is None:
                 try:
-                    self.yolo_model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True, trust_repo=True)
+                    local_weights = 'yolov5s.pt'
+                    try:
+                        base_path = sys._MEIPASS
+                    except AttributeError:
+                        base_path = os.path.abspath(".")
+                    weights_path = os.path.join(base_path, local_weights)
+
+                    if os.path.exists(weights_path):
+                        print(f"INFO: Loading YOLOv5 model locally from {weights_path}")
+                        self.yolo_model = torch.hub.load('ultralytics/yolov5', 'custom', path=weights_path, trust_repo=True)
+                    else:
+                        print("INFO: Loading YOLOv5 model from PyTorch Hub")
+                        self.yolo_model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True, trust_repo=True)
+
                     self.yolo_model.to(self.device)
                     self.yolo_model.eval()
                 except Exception as e:
@@ -624,9 +637,22 @@ class DistanceCalculator(QWidget):
             return
 
         try:
-            model_name = "Intel/dpt-hybrid-midas"
-            self.dpt_processor = DPTImageProcessor.from_pretrained(model_name)
-            self.dpt_model = DPTForDepthEstimation.from_pretrained(model_name).to(self.device)
+            local_model = 'dpt-model'
+            try:
+                base_path = sys._MEIPASS
+            except AttributeError:
+                base_path = os.path.abspath(".")
+            model_path = os.path.join(base_path, local_model)
+
+            if os.path.exists(model_path):
+                model_src = model_path
+                print(f"INFO: Loading DPT model locally from {model_src}")
+            else:
+                model_src = "Intel/dpt-hybrid-midas"
+                print(f"INFO: Loading DPT model from Hugging Face Hub: {model_src}")
+
+            self.dpt_processor = DPTImageProcessor.from_pretrained(model_src)
+            self.dpt_model = DPTForDepthEstimation.from_pretrained(model_src).to(self.device)
             self.dpt_model.eval() # Set model to evaluation mode
             self.status_label.setText(f"DPT model loaded on {self.device}. Ready for use.")
         except Exception as e:

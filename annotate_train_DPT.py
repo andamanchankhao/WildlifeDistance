@@ -248,9 +248,22 @@ class AnnotationTool(QWidget):
             self.status_label.setText("DPT dependencies not installed. Inference and training are disabled.")
             return
         try:
-            self.status_label.setText(f"Loading DPT model '{DPT_MODEL_NAME}'...")
-            self.dpt_processor = DPTImageProcessor.from_pretrained(DPT_MODEL_NAME)
-            self.dpt_model = DPTForDepthEstimation.from_pretrained(DPT_MODEL_NAME).to(self.device)
+            local_model = 'dpt-model'
+            try:
+                base_path = sys._MEIPASS
+            except AttributeError:
+                base_path = os.path.abspath(".")
+            model_path = os.path.join(base_path, local_model)
+
+            if os.path.exists(model_path):
+                model_src = model_path
+                self.status_label.setText(f"Loading DPT model locally from {model_src}...")
+            else:
+                model_src = DPT_MODEL_NAME
+                self.status_label.setText(f"Loading DPT model '{DPT_MODEL_NAME}' from Hub...")
+
+            self.dpt_processor = DPTImageProcessor.from_pretrained(model_src)
+            self.dpt_model = DPTForDepthEstimation.from_pretrained(model_src).to(self.device)
             self.dpt_model.eval()
             self.status_label.setText(f"DPT model loaded successfully on {self.device}.")
         except Exception as e:

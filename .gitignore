@@ -21,6 +21,8 @@ yolov5s.pt
 *.pt
 *.onnx
 *.pb
+# Ignore local DPT weights folder (Hugging Face cache directory offline)
+dpt-model/
 
 # Ignore generated/trained Keras and Joblib models
 *.keras

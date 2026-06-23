@@ -49,6 +49,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # Step 4.5: Download model weights to package them offline
+      - name: Download offline model weights
+        run: python download_models.py
+
       # Step 5: Run PyInstaller to build the application
       - name: Build with PyInstaller
         run: pyinstaller WildlifeDistance.spec --noconfirm

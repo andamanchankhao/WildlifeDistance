@@ -29,6 +29,12 @@ datas += [
 if os.path.exists('fonts'):
     datas += [('fonts', 'fonts')]
 
+if os.path.exists('yolov5s.pt'):
+    datas += [('yolov5s.pt', '.')]
+
+if os.path.exists('dpt-model'):
+    datas += [('dpt-model', 'dpt-model')]
+
 
 a = Analysis(
     ['main_app.py'], # Entry point changed to main_app.py

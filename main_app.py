@@ -17,23 +17,11 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QIcon, QPixmap, QFont, QColor
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 
-# Import Refactored Components
-from annotate_train_DPT import AnnotationTool
-from calculator_DPT import DistanceCalculator
-from training_DPT import TrainingTool
+# Import Refactored Components (tabs imported dynamically below to prevent startup freeze)
+AnnotationTool = None
+DistanceCalculator = None
+TrainingTool = None
 from styles import apply_theme
-
-# --- Opt-1 & Opt-2: Shared DPT model loader ---
-# The previous design loaded three independent copies of Intel/dpt-hybrid-midas
-# (one per tab), tripling RAM usage and startup time.  We now load it ONCE here
-# and pass the shared (processor, model, device) tuple into every tool.
-try:
-    from transformers import DPTForDepthEstimation, DPTImageProcessor
-    import torch
-    _DPT_AVAILABLE = True
-except ImportError:
-    DPTForDepthEstimation = DPTImageProcessor = torch = None
-    _DPT_AVAILABLE = False
 
 DPT_MODEL_NAME = "Intel/dpt-hybrid-midas"
 
@@ -48,14 +36,31 @@ def load_shared_dpt_model():
 
     Returns (None, None, 'cpu') if dependencies are missing or loading fails.
     """
-    if not _DPT_AVAILABLE:
+    try:
+        from transformers import DPTForDepthEstimation, DPTImageProcessor
+        import torch
+    except ImportError:
         print("WARNING: 'transformers' or 'torch' not installed. DPT disabled.")
         return None, None, "cpu"
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     try:
-        processor = DPTImageProcessor.from_pretrained(DPT_MODEL_NAME)
-        model = DPTForDepthEstimation.from_pretrained(DPT_MODEL_NAME).to(device)
+        local_model = 'dpt-model'
+        try:
+            base_path = sys._MEIPASS
+        except AttributeError:
+            base_path = os.path.abspath(".")
+        model_path = os.path.join(base_path, local_model)
+
+        if os.path.exists(model_path):
+            model_src = model_path
+            print(f"INFO: Loading DPT model locally from {model_src}")
+        else:
+            model_src = DPT_MODEL_NAME
+            print(f"INFO: Loading DPT model from Hugging Face Hub: {model_src}")
+
+        processor = DPTImageProcessor.from_pretrained(model_src)
+        model = DPTForDepthEstimation.from_pretrained(model_src).to(device)
         model.eval()
 
         # Opt-2: FP16 reduces VRAM by ~50 % and speeds up inference on CUDA.
@@ -341,18 +346,34 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     apply_theme(app)
 
-    # 1. Create and show Splash Screen
+    # 1. Create and show Splash Screen instantly (no heavy imports executed yet)
     splash = WildlifeDistanceSplashScreen()
     splash.show()
+    splash.set_status_text("Initializing application UI...")
     app.processEvents()
 
-    # 2. Instantiate main app (initially hidden)
+    # 2. Dynamically import heavy tab modules, keeping the UI event loop alive
+    splash.set_status_text("Loading Annotation module...")
+    app.processEvents()
+    from annotate_train_DPT import AnnotationTool
+
+    splash.set_status_text("Loading Calibration module...")
+    app.processEvents()
+    from training_DPT import TrainingTool
+
+    splash.set_status_text("Loading Object Detection module...")
+    app.processEvents()
+    from calculator_DPT import DistanceCalculator
+
+    # 3. Instantiate main app (initially hidden)
+    splash.set_status_text("Creating Main Window...")
+    app.processEvents()
     window = WildlifeDistanceApp()
 
-    # 3. Connect thread status signals to splash screen
+    # 4. Connect thread status signals to splash screen
     window.loader_thread.status_changed.connect(splash.set_status_text)
 
-    # 4. Connect finish signal to close splash and show main window
+    # 5. Connect finish signal to close splash and show main window
     def launch_main_app(processor, model, device):
         splash.close()
         window.show()
@@ -361,7 +382,7 @@ if __name__ == "__main__":
 
     window.loader_thread.model_loaded.connect(launch_main_app)
 
-    # 5. Start the background model loader thread
+    # 6. Start the background model loader thread
     window.loader_thread.start()
 
     sys.exit(app.exec_())
